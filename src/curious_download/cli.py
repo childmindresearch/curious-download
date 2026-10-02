@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import sys
+from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -23,6 +24,7 @@ from .client import EXPORT_ROLES, ApiError, CuriousClient, MfaRequiredError, Par
 from .crypto import AppletDecryptor, AppletPasswordError
 from .csvout import write_csv
 from .export import DEFAULT_PAGE_SIZE, ExportFilters, build_export, download_answers, write_jsonl
+from .media import STATUS_DOWNLOADED, STATUS_FAILED, STATUS_FROM_ANSWER, download_media, write_manifest
 from .report import REPORT_COLUMNS
 
 console = Console(stderr=True)
@@ -272,7 +274,13 @@ def _choose_activities(details: dict, activities: list[str], flows: list[str], a
     return {a["id"] for a in picked_activities}, {f["id"] for f in picked_flows}, labels
 
 
-def _equivalent_command(server: str, email: str, applet_id: str, participants, start, end, activity_labels, output):
+def _progress(label: str) -> Progress:
+    return Progress(TextColumn(label), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn(), console=console)
+
+
+def _equivalent_command(
+    server: str, email: str, applet_id: str, participants, start, end, activity_labels, output, media: bool
+):
     parts = ["curious-download", "--server", server, "--email", email, "--applet", applet_id]
     for participant in participants:
         parts += ["--participant", participant.secret_id or participant.subject_id]
@@ -285,6 +293,8 @@ def _equivalent_command(server: str, email: str, applet_id: str, participants, s
             parts += ["--flow", label.removeprefix("Flow: ")]
         else:
             parts += ["--activity", label]
+    if media:
+        parts.append("--media")
     parts += ["--output", str(output)]
     return " ".join(shlex.quote(part) for part in parts)
 
@@ -318,6 +328,10 @@ def download(
     subscale_null_when_skipped: Annotated[
         bool, typer.Option(help="Score skipped items as missing instead of 0 (admin feature flag).")
     ] = False,
+    media: Annotated[
+        bool | None,
+        typer.Option("--media/--no-media", help="Also download photos, video, audio, drawings, and Unity task files."),
+    ] = None,
     mfa_code: Annotated[str | None, typer.Option(help="Two-factor code, if your account uses MFA.")] = None,
     no_input: Annotated[bool, typer.Option(help="Never prompt; anything not given means 'all'.")] = False,
     version: Annotated[bool, typer.Option("--version", help="Show the version and exit.")] = False,
@@ -380,6 +394,10 @@ def download(
                 activity_ids=activity_ids,
                 flow_ids=flow_ids,
             )
+            if media is None:
+                media = ask_filters and _ask(
+                    questionary.confirm("Also download media files (photos, video, audio, drawings)?", default=False)
+                )
 
             summary = Table(show_header=False, box=None)
             summary.add_row("Applet", applet_name)
@@ -387,17 +405,12 @@ def download(
             summary.add_row("From (UTC)", filters.api_from or "beginning")
             summary.add_row("To (UTC)", filters.api_to or "now")
             summary.add_row("Activities", ", ".join(activity_labels) or "all")
+            summary.add_row("Media files", "yes" if media else "no")
             console.print(summary)
             if interactive and not _ask(questionary.confirm("Download now?", default=True)):
                 raise typer.Exit(1)
 
-            with Progress(
-                TextColumn("Downloading answers"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                console=console,
-            ) as progress:
+            with _progress("Downloading answers") as progress:
                 task = progress.add_task("download", total=None)
                 answers, activity_defs = download_answers(
                     client,
@@ -407,20 +420,37 @@ def download(
                     on_progress=lambda done, total: progress.update(task, completed=done, total=total),
                 )
 
-        result = build_export(
-            answers,
-            activity_defs,
-            decryptor,
-            filters,
-            null_when_skipped=subscale_null_when_skipped,
-            keep_decrypted=save_decrypted,
-        )
+            result = build_export(
+                answers,
+                activity_defs,
+                decryptor,
+                filters,
+                null_when_skipped=subscale_null_when_skipped,
+                keep_decrypted=save_decrypted,
+                include_media=bool(media),
+            )
 
-        export_dir = output / f"{_slug(applet_name)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        write_csv(export_dir / "responses.csv", result.rows, REPORT_COLUMNS)
-        if save_decrypted:
-            write_jsonl(export_dir / "decrypted_answers.jsonl", result.decrypted)
+            export_dir = output / f"{_slug(applet_name)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            write_csv(export_dir / "responses.csv", result.rows, REPORT_COLUMNS)
+            if save_decrypted:
+                write_jsonl(export_dir / "decrypted_answers.jsonl", result.decrypted)
+
+            media_outcomes = []
+            if media:
+                if result.media:
+                    with _progress("Downloading media") as progress:
+                        task = progress.add_task("media", total=len(result.media))
+                        media_outcomes = download_media(
+                            client,
+                            details["id"],
+                            result.media,
+                            export_dir,
+                            on_progress=lambda done, total: progress.update(task, completed=done, total=total),
+                        )
+                write_manifest(export_dir / "media_files.csv", media_outcomes)
+
+        media_counts = Counter(outcome.status for outcome in media_outcomes)
         info = {
             "tool": f"curious-download {__version__}",
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -437,6 +467,14 @@ def download(
             "rows_written": len(result.rows),
             "key_variant": decryptor.key_variant,
             "decryption_failures": [vars(f) for f in result.failures],
+            "media": {
+                "requested": bool(media),
+                "files": len(media_outcomes),
+                **{
+                    status: media_counts.get(status, 0)
+                    for status in (STATUS_DOWNLOADED, STATUS_FROM_ANSWER, STATUS_FAILED)
+                },
+            },
         }
         (export_dir / "export_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False))
 
@@ -448,10 +486,20 @@ def download(
             console.print(
                 f"[yellow]{len(result.failures)} submission(s) could not be decrypted; see export_info.json.[/yellow]"
             )
+        if media:
+            saved = media_counts[STATUS_DOWNLOADED] + media_counts[STATUS_FROM_ANSWER]
+            console.print(f"Media: {saved} of {len(media_outcomes)} files saved in [bold]{export_dir}[/bold]")
+            if media_counts[STATUS_FAILED]:
+                console.print(
+                    f"[yellow]{media_counts[STATUS_FAILED]} media file(s) could not be downloaded; "
+                    f"see media_files.csv.[/yellow]"
+                )
         if interactive:
             console.print("\nTo repeat this download without the questions:")
             console.print(
-                _equivalent_command(server, email, details["id"], participants, start, end, activity_labels, output),
+                _equivalent_command(
+                    server, email, details["id"], participants, start, end, activity_labels, output, bool(media)
+                ),
                 soft_wrap=True,
                 highlight=False,
             )

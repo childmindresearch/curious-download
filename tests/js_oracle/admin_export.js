@@ -1,7 +1,8 @@
 // The admin panel's export formatting, copied from mindlogger-admin/src/shared/utils
 // with TypeScript types removed and logic left as-is. Used as a reference to check
-// the Python port. Reads [{answer, activity, answersDecrypted}] on stdin and prints
-// the sanitized responses.csv rows for each submission as JSON.
+// the Python port. Reads [{answer, activity, answersDecrypted}] on stdin and prints,
+// for each submission, the sanitized responses.csv rows and the files the admin would
+// put in its media and unity zips.
 //
 // Flags match a production export: enableDataExportRenaming on,
 // enableSubscaleNullWhenSkipped taken from the input.
@@ -541,6 +542,99 @@ const remapFailed = (decryptedAnswers) =>
     }
     return item;
   });
+// --- getUrls.ts, getParsedAnswers.ts getAnswersWithPublicUrls ---------------
+// Two deliberate changes: presigning is the identity (it keeps the file path, which is
+// all the formatting looks at), and a drawing without an uploaded file is reported as
+// `inline:<svg>` instead of a browser blob URL.
+const isUnityAnswerData = (item) => item.activityItem?.responseType === ItemResponseType.Unity;
+const isNotMediaAnswerData = (item) => !ItemsWithFileResponses.includes(item.activityItem?.responseType) || !item.answer;
+const getDrawingUrl = (item) => {
+  const drawingAnswer = item.answer;
+  if (drawingAnswer.value.uri) return drawingAnswer.value.uri;
+  return `inline:${drawingAnswer.value.svgString}`;
+};
+const getMediaUrl = (item) => {
+  const answer = item.answer;
+  if (!answer) return '';
+  if (typeof answer.value === 'string') {
+    return answer.value;
+  } else if (Array.isArray(answer.value)) {
+    return answer.value[0];
+  } else if (answer.value && typeof answer.value === 'object' && 'uri' in answer.value) {
+    return answer.value.uri || '';
+  }
+  return '';
+};
+const shouldConvertPrivateDrawingUrl = (item) => isDrawingAnswerData(item) && Boolean(item.answer.value.uri);
+const getAnswersWithPublicUrls = (parsedAnswers) => {
+  if (!parsedAnswers.length) return [];
+  const privateUrls = parsedAnswers.reduce((acc, data) => {
+    const decryptedAnswers = data.decryptedAnswers.reduce((urlsAcc, item) => {
+      if (shouldConvertPrivateDrawingUrl(item)) return urlsAcc.concat(getDrawingUrl(item));
+      if (!item.answer) return urlsAcc;
+      if (isMediaAnswerData(item)) {
+        return urlsAcc.concat(getMediaUrl(item));
+      } else if (isUnityAnswerData(item)) {
+        const unityUrls = getUnityMediaUrls(item);
+        if (unityUrls.length) return urlsAcc.concat(...unityUrls);
+        return urlsAcc.concat(getMediaUrl(item));
+      } else {
+        return urlsAcc;
+      }
+    }, []);
+    return acc.concat(decryptedAnswers);
+  }, []);
+  const publicUrls = privateUrls; // presign: identity
+  let publicUrlIndex = 0;
+  return parsedAnswers.reduce((acc, data) => {
+    const decryptedAnswers = data.decryptedAnswers.reduce((decryptedAnswersAcc, item) => {
+      if (shouldConvertPrivateDrawingUrl(item)) {
+        return decryptedAnswersAcc.concat({
+          ...item,
+          answer: { ...item.answer, value: { ...item.answer.value, uri: publicUrls[publicUrlIndex++] ?? '' } },
+        });
+      }
+      if (!item.answer) return decryptedAnswersAcc.concat(item);
+      if (isUnityAnswerData(item)) {
+        const originalUrls = getUnityMediaUrls(item);
+        if (originalUrls.length) {
+          const publicTaskUrls = originalUrls.map(() => publicUrls[publicUrlIndex++] ?? '');
+          return decryptedAnswersAcc.concat({ ...item, answer: { ...item.answer, value: { taskData: publicTaskUrls } } });
+        }
+        return decryptedAnswersAcc.concat({ ...item, answer: { ...item.answer, value: publicUrls[publicUrlIndex++] ?? '' } });
+      }
+      if (isNotMediaAnswerData(item)) return decryptedAnswersAcc.concat(item);
+      return decryptedAnswersAcc.concat({ ...item, answer: { ...item.answer, value: publicUrls[publicUrlIndex++] ?? '' } });
+    }, []);
+    return acc.concat({ ...data, decryptedAnswers });
+  }, []);
+};
+
+// --- getReportAndMediaData.ts getMediaData / getUnityData -------------------
+const getMediaData = (mediaData, decryptedAnswers) => {
+  const mediaAnswers = decryptedAnswers.reduce((filteredAcc, item) => {
+    if (isDrawingAnswerData(item)) return filteredAcc.concat({ fileName: getMediaFileName(item, 'svg'), url: getDrawingUrl(item) });
+    const responseType = item.activityItem?.responseType;
+    const url = getMediaUrl(item);
+    if (!ItemsWithFileResponses.includes(responseType) || !url) return filteredAcc;
+    return filteredAcc.concat({ fileName: getMediaFileName(item, getFileExtension(url)), url });
+  }, []);
+  return mediaData.concat(...mediaAnswers);
+};
+const getUnityData = (unityData, decryptedAnswers) => {
+  const unityAnswers = decryptedAnswers.reduce((filteredAcc, item) => {
+    const responseType = item.activityItem?.responseType;
+    if (responseType !== ItemResponseType.Unity) return filteredAcc;
+    const folderName = item.id;
+    const mediaData = getUnityMediaUrls(item).map((url, index) => {
+      const urlFileName = url.split('?')[0].split('/').pop() ?? '';
+      return { fileName: `${folderName}/${urlFileName || `${index}.${getFileExtension(url)}`}`, url };
+    });
+    return filteredAcc.concat(mediaData);
+  }, []);
+  return unityData.concat(...unityAnswers);
+};
+
 const getReportData = (rawAnswersObject, decryptedAnswers) => {
   const answers = decryptedAnswers.reduce((filteredAcc, item, index) => {
     const shouldSkipItem = item.answer === undefined || item.answer === null;
@@ -567,11 +661,16 @@ function sanitizeCSVValue(value) {
 }
 const sanitizeRow = (row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, sanitizeCSVValue(value)]));
 
-// --- run -------------------------------------------------------------------
+// --- run (prepareDecryptedData order) ---------------------------------------
 const output = input.submissions.map(({ answer, activity, answersDecrypted }) => {
   const withActivity = { ...answer, items: activity.items, activityName: activity.name, subscaleSetting: activity.subscaleSetting };
-  const decrypted = remapFailed(getDecryptedAnswers(withActivity, answersDecrypted));
+  const remapped = remapFailed(getDecryptedAnswers(withActivity, answersDecrypted));
+  const [{ decryptedAnswers: decrypted }] = getAnswersWithPublicUrls([{ decryptedAnswers: remapped }]);
   const rawAnswersObject = getObjectFromList(decrypted, (item) => item.activityItem.name);
-  return getReportData(rawAnswersObject, decrypted).map(sanitizeRow);
+  return {
+    rows: getReportData(rawAnswersObject, decrypted).map(sanitizeRow),
+    media: getMediaData([], decrypted),
+    unity: getUnityData([], decrypted),
+  };
 });
 process.stdout.write(JSON.stringify(output));

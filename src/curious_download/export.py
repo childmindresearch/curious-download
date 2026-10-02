@@ -12,6 +12,7 @@ from typing import Any
 from .client import CuriousClient
 from .crypto import AppletDecryptor, DecryptionError
 from .jscompat import UNDEFINED, get, nullish
+from .media import MediaFile, collect_media, with_public_urls
 from .report import report_row
 from .subscales import subscale_columns
 
@@ -67,6 +68,7 @@ class ExportResult:
     answers_kept: int
     failures: list[DecryptionFailure]
     decrypted: list[dict]
+    media: list[MediaFile] = field(default_factory=list)
 
 
 ProgressCallback = Callable[[int, int], None]
@@ -150,6 +152,11 @@ def decrypt_records(answer: dict, activity: dict, answers_decrypted: Any) -> lis
     return records
 
 
+def prepare_records(answer: dict, activity: dict, answers_decrypted: Any) -> list[dict]:
+    """Decrypted records with file URLs placed as the admin formats them (prepareDecryptedData)."""
+    return with_public_urls(decrypt_records(answer, activity, answers_decrypted))
+
+
 def rows_for_submission(records: list[dict], *, null_when_skipped: bool = False) -> list[dict]:
     """getReportData: rows for answered items, plus subscale columns on the first row."""
     raw_answers = {record["activityItem"].get("name"): record for record in records}
@@ -179,10 +186,12 @@ def build_export(
     *,
     null_when_skipped: bool = False,
     keep_decrypted: bool = False,
+    include_media: bool = False,
 ) -> ExportResult:
     rows: list[dict] = []
     failures: list[DecryptionFailure] = []
     decrypted: list[dict] = []
+    media: list[MediaFile] = []
     downloaded = kept = 0
 
     for answer in answers:
@@ -212,8 +221,10 @@ def build_export(
                 except DecryptionError:
                     events = None
 
-        records = decrypt_records(answer, activity, answers_decrypted)
+        records = prepare_records(answer, activity, answers_decrypted)
         rows.extend(rows_for_submission(records, null_when_skipped=null_when_skipped))
+        if include_media:
+            media.extend(collect_media(records))
 
         if keep_decrypted:
             decrypted.append(
@@ -231,7 +242,7 @@ def build_export(
                 }
             )
 
-    return ExportResult(rows, downloaded, kept, failures, decrypted)
+    return ExportResult(rows, downloaded, kept, failures, decrypted, media)
 
 
 def write_jsonl(path, records: list[dict]) -> None:

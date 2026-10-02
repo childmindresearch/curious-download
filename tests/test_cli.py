@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from curious_download import cli
 from curious_download.client import CuriousClient
-from curious_download.export import decrypt_records, rows_for_submission
+from curious_download.export import prepare_records, rows_for_submission
 from curious_download.report import REPORT_COLUMNS
 
 from . import corpus
@@ -65,7 +65,7 @@ def _expected_rows(server: FakeCurious, answer_ids: list[str]) -> list[dict]:
     for answer in server.answers:
         if answer["id"] in answer_ids:
             activity = server.activities[answer["activityHistoryId"]]
-            records = decrypt_records(answer, activity, server.plain_answers[answer["id"]])
+            records = prepare_records(answer, activity, server.plain_answers[answer["id"]])
             rows += [{k: sanitize_value(v) for k, v in row.items()} for row in rows_for_submission(records)]
     return rows
 
@@ -157,3 +157,43 @@ def test_output_feeds_post_processing_tool(run):
     sample_header = next(csv.reader(io.StringIO(sample.read_text(encoding="utf-8-sig"))))
     header, _ = _read_csv(export_dir / "responses.csv")
     assert header[: len(sample_header)] == sample_header
+
+
+def test_media_download(run):
+    server = FakeCurious()
+    result, export_dir = run(server, "--media")
+    assert result.exit_code == 0, result.output
+
+    # e1 answers every item type; its media goes where responses.csv says it is.
+    _, rows = _read_csv(export_dir / "responses.csv")
+    cells = {r["item_name"]: r["item_response"] for r in rows if r["activity_submission_id"] == "e1"}
+    for item in ("selfie", "clip", "voice", "sketch"):
+        assert (export_dir / "media" / cells[item]).read_bytes().startswith(b"bytes of /")
+    for name in cells["game"].split(", "):
+        assert (export_dir / "unity" / name).is_file()
+
+    _, manifest = _read_csv(export_dir / "media_files.csv")
+    assert len(manifest) == 6
+    assert {m["status"] for m in manifest} == {"downloaded"}
+    assert all("authorization" not in r.headers for r in server.storage_requests)
+
+    info = json.loads((export_dir / "export_info.json").read_text())
+    assert info["media"] == {"requested": True, "files": 6, "downloaded": 6, "saved_from_answer": 0, "failed": 0}
+
+
+def test_media_requested_but_none_found(run):
+    server = FakeCurious()
+    result, export_dir = run(server, "--media", "--activity", "Scored")
+    assert result.exit_code == 0, result.output
+    _, manifest = _read_csv(export_dir / "media_files.csv")
+    assert manifest == []
+    assert not (export_dir / "media").exists()
+
+
+def test_no_media_by_default(run):
+    server = FakeCurious()
+    result, export_dir = run(server)
+    assert result.exit_code == 0, result.output
+    assert not (export_dir / "media").exists() and not (export_dir / "media_files.csv").exists()
+    assert not any(r.url.path.endswith("/presign") for r in server.requests)
+    assert json.loads((export_dir / "export_info.json").read_text())["media"]["requested"] is False

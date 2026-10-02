@@ -58,6 +58,7 @@ curious-download --no-input \
 | `--participant`, `-p` | Participant secret ID (repeatable). Matches the participant the answers are **about** (target subject), as in the admin panel's per-participant export |
 | `--from`, `--to` | Dates (`YYYY-MM-DD`) or datetimes in **your local time**; converted to UTC and compared with the time the server received each answer |
 | `--activity`, `-a` / `--flow` | Activity or flow name or ID (repeatable) |
+| `--media` | Also download the media files of the selected answers (photos, video, audio, drawings, Unity task files) |
 | `--mfa-code` | Two-factor code for scripted runs |
 | `--page-size` | Answers per request (default 500, max 10000) |
 | `--save-decrypted` | Also write `decrypted_answers.jsonl` with the raw decrypted answers and events |
@@ -74,8 +75,21 @@ Each run writes a new folder `<output>/<applet>_<timestamp>/` containing:
 - **`export_info.json`**: the filters used (with exact UTC bounds), counts, the tool version, and
   any submissions that could not be decrypted. It contains no passwords.
 
+With `--media`, the folder also contains:
+
+- **`media/`**: photos, video, audio, and drawings (SVG). Each file has the admin's name,
+  `<target secret ID>-<submission ID>-<item name>.<extension>`, which is also what the
+  `item_response` cell shows. Characters that aren't allowed in file names (such as `/` in a
+  secret ID) become `_`.
+- **`unity/<submission ID>/`**: Unity task files.
+- **`media_files.csv`**: every media file with its submission, participant, item, saved path,
+  and status. The status is `downloaded`; `saved_from_answer` (a drawing that was never uploaded,
+  saved from the SVG stored in the answer); or `failed`, with the reason, for example a file the
+  phone never uploaded or one the server refused to share. The admin panel skips such files
+  silently; here they are listed. The file is written even when there are no media files.
+
 Rows are ordered newest first, like the admin export. Unlike the admin, everything goes into
-one file instead of one file per 250 answers.
+one file instead of one file per 250 answers, and media go into folders instead of zips.
 
 ## How it works
 
@@ -88,6 +102,10 @@ one file instead of one file per 250 answers.
 4. Decrypts each answer (AES-256-CBC with a Diffie–Hellman key, as the mobile app encrypts it).
    Activity filtering happens here, because the export endpoint has no activity filter.
 5. Formats rows with a line-by-line port of the admin panel's export code.
+6. With `--media`, asks the server for temporary download links (`POST /file/{id}/presign`, valid
+   for one hour, requested in batches of 50 just before downloading) and downloads the files four
+   at a time. Your API login is never sent to the storage service; the links carry their own
+   permission.
 
 **Key derivation note.** The admin panel builds the applet key with a JavaScript string
 conversion that depends on how the browser's `Buffer` polyfill decodes invalid UTF-8. Native
@@ -98,7 +116,10 @@ applet's public key. `export_info.json` records which one matched (`key_variant`
 
 - Passwords are never written to disk. `~/.config/curious-download/settings.json` only remembers
   the server address and email.
-- **Exports contain decrypted participant data.** Store them as you would any study data.
+- **Exports contain decrypted participant data**, and media files (photos, voice recordings, video)
+  are often the most identifying part. Store them as you would any study data.
+- Media downloads need an owner, manager, or reviewer role on the applet; the server refuses to
+  sign links for anyone else.
 - Use `CURIOUS_PASSWORD` / `CURIOUS_APPLET_PASSWORD` for scripts instead of putting passwords on
   the command line, where they end up in shell history.
 
@@ -106,8 +127,6 @@ applet's public key. `export_info.json` records which one matched (`key_variant`
 
 These are produced by the admin export but not by this tool yet:
 
-- Media files (photos, audio, video, drawings). `responses.csv` names them the same way the
-  admin does.
 - `activity_user_journey.csv`.
 - The per-task CSVs for drawing, AB Trails, stability tracker, and flanker.
 - EHR data.
@@ -127,7 +146,7 @@ Node.js is needed for two kinds of test:
 - `tests/js_oracle/admin_export.js` holds the admin panel's export functions, copied with only
   the TypeScript types removed. The parity tests run them and the Python port on the same
   synthetic submissions (`tests/corpus.py`, every item type and the known edge cases) and
-  require identical cells and column order.
+  require identical cells and column order, and identical media file names and URLs.
 - `tests/js_oracle/crypto_oracle.js` encrypts answers with Node's crypto exactly as the mobile
   app does. The Python side must decrypt them.
 

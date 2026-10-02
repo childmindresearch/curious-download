@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Self
 
 import httpx
@@ -64,12 +65,16 @@ class CuriousClient:
     def __init__(self, base_url: str, *, timeout: float = 120.0, transport: httpx.BaseTransport | None = None):
         self.base_url = base_url.rstrip("/")
         self._http = httpx.Client(base_url=self.base_url, timeout=timeout, transport=transport)
+        # Presigned storage URLs carry their own credentials; this client never sends the API token.
+        self._files = httpx.Client(timeout=timeout, transport=transport, follow_redirects=True)
         self._access_token: str | None = None
         self._refresh_token: str | None = None
+        self.retry_delay = 1.0
         self.user: dict[str, Any] = {}
 
     def close(self) -> None:
         self._http.close()
+        self._files.close()
 
     def __enter__(self) -> Self:
         return self
@@ -129,7 +134,7 @@ class CuriousClient:
             except httpx.TransportError:
                 if attempt >= _MAX_ATTEMPTS:
                     raise
-                time.sleep(2**attempt)
+                self._backoff(attempt)
                 continue
 
             if response.status_code == 401 and auth and not refreshed:
@@ -137,14 +142,45 @@ class CuriousClient:
                 if self._refresh():
                     continue
             if response.status_code in _RETRY_STATUS and attempt < _MAX_ATTEMPTS:
-                time.sleep(2**attempt)
+                self._backoff(attempt)
                 continue
             if response.is_error:
                 raise ApiError(response.status_code, _error_message(response))
             return response.json()
 
+    def _backoff(self, attempt: int) -> None:
+        time.sleep(self.retry_delay * 2 ** (attempt - 1))
+
     def _get(self, path: str, params: Any = None) -> Any:
         return self._request("GET", path, params=params)
+
+    def download_file(self, url: str, path: Path) -> int:
+        """Stream a presigned storage URL to `path` and return the number of bytes written."""
+        partial = path.with_name(path.name + ".part")
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with self._files.stream("GET", url) as response:
+                    if response.status_code in _RETRY_STATUS and attempt < _MAX_ATTEMPTS:
+                        self._backoff(attempt)
+                        continue
+                    response.raise_for_status()
+                    size = 0
+                    with partial.open("wb") as fh:
+                        for chunk in response.iter_bytes():
+                            fh.write(chunk)
+                            size += len(chunk)
+                partial.replace(path)
+                return size
+            except httpx.TransportError:
+                partial.unlink(missing_ok=True)
+                if attempt >= _MAX_ATTEMPTS:
+                    raise
+                self._backoff(attempt)
+            except httpx.HTTPStatusError:
+                partial.unlink(missing_ok=True)
+                raise
 
     # -- endpoints --------------------------------------------------------
 
@@ -177,6 +213,14 @@ class CuriousClient:
                     user_id=row.get("id"),
                 )
         return sorted(found.values(), key=lambda p: p.secret_id.lower())
+
+    def presign(self, applet_id: str, private_urls: Sequence[str]) -> list[str]:
+        """Temporary (1 hour) download URLs, in the same order.
+
+        URLs the server won't sign (no access, unknown format) come back unchanged. Empty
+        entries are dropped by the server, so callers must not send any.
+        """
+        return self._post_json(f"/file/{applet_id}/presign", {"privateUrls": list(private_urls)})
 
     def export_page(
         self,

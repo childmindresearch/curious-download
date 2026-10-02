@@ -36,6 +36,7 @@ class FakeCurious:
         self.mfa = mfa
         self.expire_first_data_token = expire_first_data_token
         self.requests: list[httpx.Request] = []
+        self.storage_requests: list[httpx.Request] = []
         self._token_counter = 0
         self._valid_tokens: set[str] = set()
 
@@ -119,6 +120,12 @@ class FakeCurious:
         return token in self._valid_tokens
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "storage.test":
+            self.storage_requests.append(request)
+            if request.url.params.get("sig") != "ok":
+                return httpx.Response(403)
+            return httpx.Response(200, content=f"bytes of {request.url.path}".encode())
+
         self.requests.append(request)
         path = request.url.path
         body = json.loads(request.content) if request.content else {}
@@ -170,6 +177,15 @@ class FakeCurious:
                 self._valid_tokens.clear()
                 return httpx.Response(401, json={"result": [{"message": "Token expired"}]})
             return self._export(request)
+        if path == f"/file/{corpus.APPLET_ID}/presign":
+            # Like the backend: sign storage URLs, return anything else unchanged.
+            signed = [
+                f"https://storage.test/{url.split('://', 1)[1].split('?')[0]}?sig=ok"
+                if url.startswith("s3://")
+                else url
+                for url in body["privateUrls"]
+            ]
+            return httpx.Response(200, json={"result": signed, "count": len(signed)})
         return httpx.Response(404, json={"result": [{"message": f"No route {path}"}]})
 
     @staticmethod

@@ -287,6 +287,35 @@ def submissions() -> list[dict]:
         ),
     ]
 
+    def media_answers(**by_name) -> list:
+        names = [entry["name"] for entry in ALL_TYPES_ITEMS]
+        return [by_name.get(name) for name in names]
+
+    cases += [
+        # Media stored in every shape the app or legacy data can produce.
+        (
+            answer_record("m1", targetSecretId="P/002"),
+            full,
+            media_answers(
+                selfie={"value": ["s3://bucket/mindlogger/answer/u/a/1/list-photo.png"]},
+                clip={"value": {"uri": "s3://bucket/mindlogger/answer/u/a/1/movie.mp4", "type": "video/mp4"}},
+                voice={"value": "https://legacy.example/voice.mp3?token=1", "text": "noisy"},
+                sketch={"value": {"svgString": "<svg>m1</svg>", "width": 100, "lines": []}},
+                game={"value": "s3://bucket/unity/single.json"},
+            ),
+        ),
+        (
+            answer_record("m2"),
+            full,
+            media_answers(
+                selfie={"value": []},
+                clip={"value": ""},
+                sketch={"value": {"svgString": "<svg/>", "width": 100, "uri": "s3://b/m2.svg", "lines": []}},
+                game={"value": ["s3://bucket/unity/", 5, "s3://bucket/unity/b.json?sig=1"]},
+            ),
+        ),
+    ]
+
     scored = activity(SUBSCALE_ITEMS, name="Scored", subscale_setting=SUBSCALE_SETTING)
     cases += [
         # Lookup table hit on sex + age interval.
