@@ -112,6 +112,42 @@ conversion that depends on how the browser's `Buffer` polyfill decodes invalid U
 Node and Python decode it differently. The tool tries both and keeps the one that matches the
 applet's public key. `export_info.json` records which one matched (`key_variant`).
 
+## Participant counts per applet
+
+`curious-participant-counts` is installed with the same package. It goes through every applet in a
+workspace and counts the participants who have submitted data to each one:
+
+```bash
+curious-participant-counts                      # asks for the server, login, and workspace
+curious-participant-counts --no-input --server https://<curious-api-address> \
+  --email you@example.org --workspace "My Lab" --from 2026-09-01 --to 2026-09-30
+```
+
+It prints a table and writes `<output>/participant_counts_<workspace>_<timestamp>.csv`, one row per
+applet:
+
+| Column | Meaning |
+|---|---|
+| `participants_submitted` | People who completed at least one activity (the respondents) |
+| `participants_with_data` | Participants the answers are **about** (target subjects). Differs from the above only when someone answers about another person, e.g. a parent about a child |
+| `submissions` | Completed activities |
+| `first_submission_utc`, `last_submission_utc` | When the server received the first and latest submission |
+| `your_role`, `note` | Your role on the applet, and why an applet has no counts or partial counts |
+
+- It reads submission metadata only (`GET /answers/applet/{id}/submissions`). No answers are
+  downloaded or decrypted, so no applet passwords are needed. Older backends without that endpoint
+  are detected automatically, and the tool falls back to the export endpoint. That is slower
+  because it transfers the encrypted answers, though it still never decrypts them.
+- Reviewer assessments (answers to reviewer-only activities) are not counted.
+- You need an owner, manager, or reviewer role on an applet to count it. Other applets are listed
+  with a note. As a reviewer you only see, and so only count, the participants assigned to you.
+- `--from` / `--to` work as in `curious-download` (local time, compared with the time the server
+  received each submission).
+- Participants removed from an applet are still counted if their data was kept, as their
+  submissions are still on the server.
+- Only the current version's reviewer-only activities are excluded, so assessments for an
+  activity that has since been deleted from the applet would be counted.
+
 ## Security
 
 - Passwords are never written to disk. `~/.config/curious-download/settings.json` only remembers

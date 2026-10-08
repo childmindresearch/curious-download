@@ -242,3 +242,24 @@ class CuriousClient:
         if to_date:
             params.append(("toDate", to_date))
         return self._get(f"/answers/applet/{applet_id}/data", params)
+
+    def submissions_page(
+        self,
+        applet_id: str,
+        *,
+        page: int,
+        limit: int,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict:
+        """One page of submission metadata (who, about whom, which activity, when), without answer content.
+
+        {"submissions": [...], "submissionsCount": n, "participantsCount": m}, not wrapped in "result".
+        Newer backends only; older ones answer 404 "Not Found".
+        """
+        params: dict[str, str | int] = {"page": page, "limit": limit}
+        if from_date:
+            params["fromDate"] = from_date
+        if to_date:
+            params["toDate"] = to_date
+        return self._get(f"/answers/applet/{applet_id}/submissions", params)
