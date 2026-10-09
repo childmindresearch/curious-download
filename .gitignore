@@ -6,3 +6,4 @@ __pycache__/
 # Exports contain decrypted participant data.
 curious_exports/
 .DS_Store
+.DS_Store
