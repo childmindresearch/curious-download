@@ -84,6 +84,7 @@ class AnswersJobBody(BaseModel):
     activityIds: list[str] = Field(default_factory=list)  # empty means all
     flowIds: list[str] = Field(default_factory=list)
     media: bool = False
+    journey: bool = False
     outputDir: str
     pageSize: int = DEFAULT_PAGE_SIZE
     saveDecrypted: bool = False
@@ -155,8 +156,10 @@ def create_app(
             return JSONResponse({"error": "Forbidden host."}, status_code=403)
         if request.url.path.startswith("/api/") and request.headers.get("x-curious-token") != state.token:
             return JSONResponse(
-                {"error": "Missing or wrong app token. Open the app with the link shown in the terminal.",
-                 "badToken": True},
+                {
+                    "error": "Missing or wrong app token. Open the app with the link shown in the terminal.",
+                    "badToken": True,
+                },
                 status_code=401,
             )
         return await call_next(request)
@@ -204,7 +207,9 @@ def create_app(
         server = body.server.strip().rstrip("/")
         email = body.email.strip()
         if not server.startswith(("http://", "https://")):
-            raise HTTPException(400, "The server address must start with https:// (the backend API, not the admin site).")
+            raise HTTPException(
+                400, "The server address must start with https:// (the backend API, not the admin site)."
+            )
         if not email:
             raise HTTPException(400, "Enter your email.")
         client = state.client_factory(server)
@@ -328,6 +333,7 @@ def create_app(
                 filters=filters,
                 activity_labels=labels,
                 media=body.media,
+                journey=body.journey,
                 output=output,
                 page_size=page_size,
                 save_decrypted=body.saveDecrypted,

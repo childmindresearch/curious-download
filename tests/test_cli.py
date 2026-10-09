@@ -197,3 +197,58 @@ def test_no_media_by_default(run):
     assert not (export_dir / "media").exists() and not (export_dir / "media_files.csv").exists()
     assert not any(r.url.path.endswith("/presign") for r in server.requests)
     assert json.loads((export_dir / "export_info.json").read_text())["media"]["requested"] is False
+
+
+def _expected_journey(server: FakeCurious, answer_ids: list[str]) -> list[dict]:
+    """The journey the admin would write, using the parity-tested journey builder."""
+    from curious_download.csvout import sanitize_value
+    from curious_download.journey import journey_rows
+
+    rows = []
+    for answer in server.answers:  # newest first, like the API
+        if answer["id"] in answer_ids:
+            activity = server.activities[answer["activityHistoryId"]]
+            records = prepare_records(answer, activity, server.plain_answers[answer["id"]])
+            rows += [
+                {k: sanitize_value(v) for k, v in row.items()}
+                for row in journey_rows(records, server.plain_events[answer["id"]])
+            ]
+    return rows
+
+
+def test_journey_download(run):
+    from curious_download.journey import JOURNEY_COLUMNS
+
+    server = FakeCurious()
+    result, export_dir = run(server, "--journey")
+    assert result.exit_code == 0, result.output
+
+    header, rows = _read_csv(export_dir / "activity_user_journey.csv")
+    assert header == JOURNEY_COLUMNS
+    # e3's actions can't be decrypted, so only e1 and e2 have journey rows; its answers are still exported.
+    assert rows == _expected_journey(server, ["e1", "e2"])
+    assert {r["activity_submission_id"] for r in rows} == {"e1", "e2"}
+    assert any(r["item_name"] == "Splash Screen" for r in rows)
+    assert {r["activity_submission_id"] for r in _read_csv(export_dir / "responses.csv")[1]} >= {"e3"}
+
+    info = json.loads((export_dir / "export_info.json").read_text())
+    assert info["journey"]["requested"] is True and info["journey"]["rows"] == len(rows)
+    assert [f["answer_id"] for f in info["journey"]["actions_decryption_failures"]] == ["e3"]
+    assert "could not be decrypted" in result.output
+
+
+def test_journey_follows_the_filters(run):
+    server = FakeCurious()
+    result, export_dir = run(server, "--journey", "--activity", "Scored", "--participant", "P001")
+    assert result.exit_code == 0, result.output
+    _, rows = _read_csv(export_dir / "activity_user_journey.csv")
+    assert rows == _expected_journey(server, ["e2"])
+
+
+def test_no_journey_by_default(run):
+    server = FakeCurious()
+    result, export_dir = run(server)
+    assert result.exit_code == 0, result.output
+    assert not (export_dir / "activity_user_journey.csv").exists()
+    info = json.loads((export_dir / "export_info.json").read_text())
+    assert info["journey"] == {"requested": False, "rows": 0, "actions_decryption_failures": []}

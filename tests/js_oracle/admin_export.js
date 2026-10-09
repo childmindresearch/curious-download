@@ -30,6 +30,10 @@ const LegacyFinalSubscale = { Key: 'finalSubScale', FinalSubScaleScore: 'Final S
 const SubscaleTotalScore = { Sum: 'sum', Average: 'average', Percentage: 'percentage' };
 const Sex = { M: 'M', F: 'F' };
 const ElementType = { Item: 'item', Subscale: 'subscale' };
+const UserActionType = {
+  SetAnswer: 'SET_ANSWER', Prev: 'PREV', Next: 'NEXT', Done: 'DONE', Undo: 'UNDO', Skip: 'SKIP',
+  SkipPopupConfirm: 'SKIP_POPUP_CONFIRM', SkipPopupCancel: 'SKIP_POPUP_CANCEL',
+};
 
 // --- shared/types/guards.ts ------------------------------------------------
 const isDrawingAnswerData = (item) => item.activityItem?.responseType === ItemResponseType.Drawing && Boolean(item.answer);
@@ -106,6 +110,7 @@ const isTextAnswer = (answer) => typeof answer === 'string';
 const parseResponseValue = (item, index, isEvent = false) => {
   let answer;
   if (!isEvent) answer = item.answer;
+  if (isEvent && item.type === UserActionType.SetAnswer) answer = item.response ?? item.answer;
   const answerEdited = answer?.edited;
   const editedWithLabel = answerEdited ? ` | edited: ${answerEdited}` : '';
   const responseValue = parseResponseValueRaw(item, index, answer);
@@ -648,6 +653,245 @@ const getReportData = (rawAnswersObject, decryptedAnswers) => {
   return answers;
 };
 
+// --- getJourneyCSVObject.ts (renamed branch; debug logging removed) ---------
+const getTimeByCondition = (time) => (condition) => (condition ? time : '');
+const SPLASH_SCREEN_ITEM_NAME = 'Splash Screen';
+const getJourneyCSVReturn = (returnProps) => {
+  const {
+    id, activity_flow_submission_id, activity_scheduled_time, activity_start_time, activity_end_time,
+    press_next_time, press_popup_skip_time, press_popup_keep_time, press_back_time, press_undo_time,
+    press_skip_time, press_done_time, response_option_selection_time,
+    source_user_subject_id = '', source_user_secret_id = '', source_user_nickname = '', source_user_relation = '',
+    source_user_tag = '', target_user_subject_id = '', target_user_secret_id = '', target_user_nickname = '',
+    target_user_tag = '', input_user_subject_id = '', input_user_secret_id = '', input_user_nickname = '',
+    secret_user_id = '', user_id = '', activity_id, activity_flow_id = '', activity_flow_name = '', activity_name,
+    item, item_id = '', prompt, response, options, version = '', item_type, legacy_user_id = null, event_id = '',
+    timezone_offset = null,
+  } = returnProps;
+  return {
+    target_id: target_user_subject_id,
+    target_secret_id: target_user_secret_id,
+    target_nickname: target_user_nickname,
+    target_tag: target_user_tag,
+    source_id: source_user_subject_id,
+    source_secret_id: source_user_secret_id,
+    source_nickname: source_user_nickname,
+    source_tag: source_user_tag,
+    source_relation: source_user_relation,
+    input_id: input_user_subject_id,
+    input_secret_id: input_user_secret_id,
+    input_nickname: input_user_nickname,
+    user_id,
+    secret_user_id,
+    legacy_user_id,
+    applet_version: version,
+    activity_flow_id,
+    activity_flow_name,
+    activity_flow_submission_id,
+    activity_id,
+    activity_name,
+    activity_submission_id: id,
+    activity_start_time,
+    activity_end_time,
+    activity_schedule_id: event_id,
+    activity_schedule_start_time: activity_scheduled_time,
+    utc_timezone_offset: timezone_offset,
+    item_id,
+    item_name: item,
+    item_prompt: prompt,
+    item_response_options: options,
+    item_response: response,
+    item_type,
+    press_next_time,
+    press_popup_skip_time,
+    press_popup_keep_time,
+    press_back_time,
+    press_undo_time,
+    press_skip_time,
+    press_done_time,
+    response_option_selection_time,
+  };
+};
+const getSplashScreen = (event, nextExtendedEvent) => {
+  try {
+    const {
+      activityItem, id, scheduledDatetime, startDatetime, endDatetime, respondentSecretId, respondentId,
+      sourceSubjectId, sourceSecretId, sourceUserNickname, sourceUserTag, targetSubjectId, targetSecretId,
+      targetUserNickname, targetUserTag, inputSubjectId, inputSecretId, inputUserNickname, relation, activityId,
+      activityName, flowName, flowId, version, legacyProfileId, submitId,
+    } = nextExtendedEvent;
+    const getTime = getTimeByCondition(event.time.toString());
+    if (!activityItem) return undefined;
+    return getJourneyCSVReturn({
+      id,
+      activity_flow_submission_id: flowId ? submitId : '',
+      activity_scheduled_time: scheduledDatetime ? convertDateStampToMs(scheduledDatetime) : ActivityStatus.NotScheduled,
+      activity_start_time: convertDateStampToMs(startDatetime),
+      activity_end_time: convertDateStampToMs(endDatetime),
+      press_next_time: getTime(event.type === UserActionType.Next),
+      press_popup_skip_time: getTime(event.type === UserActionType.SkipPopupConfirm),
+      press_popup_keep_time: getTime(event.type === UserActionType.SkipPopupCancel),
+      press_back_time: getTime(event.type === UserActionType.Prev),
+      press_undo_time: getTime(event.type === UserActionType.Undo),
+      press_skip_time: getTime(event.type === UserActionType.Skip),
+      press_done_time: getTime(event.type === UserActionType.Done),
+      response_option_selection_time: getTime(event.type === UserActionType.SetAnswer),
+      secret_user_id: respondentSecretId,
+      user_id: respondentId,
+      source_user_subject_id: sourceSubjectId,
+      source_user_secret_id: sourceSecretId,
+      source_user_nickname: sourceUserNickname,
+      source_user_relation: relation,
+      source_user_tag: sourceUserTag,
+      target_user_subject_id: targetSubjectId,
+      target_user_secret_id: targetSecretId,
+      target_user_nickname: targetUserNickname,
+      target_user_tag: targetUserTag,
+      input_user_subject_id: inputSubjectId,
+      input_user_secret_id: inputSecretId,
+      input_user_nickname: inputUserNickname,
+      activity_id: activityId,
+      activity_flow_id: flowId,
+      activity_flow_name: flowName,
+      activity_name: activityName,
+      item: SPLASH_SCREEN_ITEM_NAME,
+      item_id: '',
+      prompt: '',
+      response: '',
+      options: '',
+      version,
+      item_type: activityItem.responseType,
+      event_id: null,
+      timezone_offset: null,
+      legacy_user_id: legacyProfileId,
+    });
+  } catch (error) {
+    return undefined;
+  }
+};
+const getJourneyCSVObject = ({ event, rawAnswersObject, index }) => {
+  try {
+    const {
+      activityItem, scheduledDatetime, startDatetime, endDatetime, respondentSecretId, respondentId,
+      sourceSubjectId, sourceSecretId, sourceUserNickname, sourceUserTag, targetSubjectId, targetSecretId,
+      targetUserNickname, targetUserTag, inputSubjectId, inputSecretId, inputUserNickname, relation, activityId,
+      activityName, flowName, flowId, version, legacyProfileId, scheduledEventId, tzOffset, submitId,
+    } = event;
+    if (!activityItem) return undefined;
+    const responseValues = activityItem?.responseValues;
+    const getTime = getTimeByCondition(event.time.toString());
+    let response, options;
+    try {
+      response = parseResponseValue(event, index, true);
+      options = replaceItemVariableWithName({
+        markdown: parseOptions(responseValues, event.activityItem?.responseType) ?? '',
+        items: event.items,
+        rawAnswersObject,
+      });
+    } catch (parseError) {
+      response = '';
+      options = '';
+    }
+    return getJourneyCSVReturn({
+      id: event.id,
+      activity_flow_submission_id: flowId ? submitId : '',
+      activity_scheduled_time: scheduledDatetime ? convertDateStampToMs(scheduledDatetime) : ActivityStatus.NotScheduled,
+      activity_start_time: convertDateStampToMs(startDatetime),
+      activity_end_time: convertDateStampToMs(endDatetime),
+      press_next_time: getTime(event.type === UserActionType.Next),
+      press_popup_skip_time: getTime(event.type === UserActionType.SkipPopupConfirm),
+      press_popup_keep_time: getTime(event.type === UserActionType.SkipPopupCancel),
+      press_back_time: getTime(event.type === UserActionType.Prev),
+      press_undo_time: getTime(event.type === UserActionType.Undo),
+      press_skip_time: getTime(event.type === UserActionType.Skip),
+      press_done_time: getTime(event.type === UserActionType.Done),
+      response_option_selection_time: getTime(event.type === UserActionType.SetAnswer),
+      secret_user_id: respondentSecretId,
+      user_id: respondentId,
+      source_user_subject_id: sourceSubjectId,
+      source_user_secret_id: sourceSecretId,
+      source_user_nickname: sourceUserNickname,
+      source_user_relation: relation,
+      source_user_tag: sourceUserTag,
+      target_user_subject_id: targetSubjectId,
+      target_user_secret_id: targetSecretId,
+      target_user_nickname: targetUserNickname,
+      target_user_tag: targetUserTag,
+      input_user_subject_id: inputSubjectId,
+      input_user_secret_id: inputSecretId,
+      input_user_nickname: inputUserNickname,
+      activity_id: activityId,
+      activity_flow_id: flowId,
+      activity_flow_name: flowName,
+      activity_name: activityName,
+      item: activityItem.name,
+      item_id: activityItem.id,
+      prompt: replaceItemVariableWithName({ markdown: getDictionaryText(activityItem.question), items: event.items, rawAnswersObject }),
+      response,
+      options,
+      version,
+      item_type: activityItem.responseType,
+      event_id: scheduledEventId,
+      timezone_offset: tzOffset,
+      legacy_user_id: legacyProfileId,
+    });
+  } catch (error) {
+    return undefined;
+  }
+};
+
+// --- migratedData.ts + getReportAndMediaData.ts getActivityJourneyData -----
+const END_OF_LINE_OF_MIGRATED_ID = '00000000';
+const END_OF_LINE_OF_MIGRATED_ID_SIZE = END_OF_LINE_OF_MIGRATED_ID.length;
+const checkIfHasMigratedAnswers = (decryptedAnswers) => {
+  if (!decryptedAnswers.length) return false;
+  return Boolean(decryptedAnswers[0]?.migratedDate);
+};
+const getIdBeforeMigration = (id = '') => id.slice(0, -END_OF_LINE_OF_MIGRATED_ID_SIZE).replace(/-/g, '');
+const getDecryptedAnswersObject = ({ decryptedAnswers, hasMigratedAnswers, hasUrlEventScreen }) =>
+  getObjectFromList(decryptedAnswers, (item) => {
+    if (hasUrlEventScreen) return item.activityItem.name;
+    if (hasMigratedAnswers) {
+      return `${getIdBeforeMigration(item.activityId)}/${getIdBeforeMigration(item.activityItem.id)}`;
+    }
+    return `${item.activityId}/${item.activityItem.id}`;
+  });
+const searchItemNameInUrlScreen = (screen) => screen.split('/').pop() ?? '';
+const checkIfScreenHasUrl = (screen) => /^https?:\/\//.test(screen);
+const checkIfHasGithubImportedEventScreen = (decryptedEvents) => {
+  if (!decryptedEvents.length) return false;
+  return checkIfScreenHasUrl(decryptedEvents[0]?.screen);
+};
+const getEventScreenWrapper = ({ hasUrlEventScreen }) => (screen) => {
+  if (!hasUrlEventScreen) return screen;
+  return searchItemNameInUrlScreen(screen);
+};
+const isSuccessEvent = (event) => event.type !== '' && event.screen !== '' && event.time !== '';
+const getActivityJourneyData = (activityJourneyData, rawAnswersObject, decryptedAnswers, decryptedEvents) => {
+  const decryptedFilteredEvents = decryptedEvents.filter(isSuccessEvent);
+  const hasMigratedAnswers = checkIfHasMigratedAnswers(decryptedAnswers);
+  const hasUrlEventScreen = checkIfHasGithubImportedEventScreen(decryptedFilteredEvents);
+  const getEventScreen = getEventScreenWrapper({ hasUrlEventScreen });
+  const decryptedAnswersObject = getDecryptedAnswersObject({ decryptedAnswers, hasMigratedAnswers, hasUrlEventScreen });
+  let indexForABTrailsFiles = 0;
+  const events = decryptedFilteredEvents.map((event, index, events) => {
+    try {
+      if (index === 0 && !decryptedAnswersObject[getEventScreen(event.screen)] && events[index + 1]) {
+        return getSplashScreen(event, { ...events[index + 1], ...decryptedAnswersObject[getEventScreen(events[index + 1].screen)] });
+      }
+      const screenKey = getEventScreen(event.screen);
+      return getJourneyCSVObject({
+        event: { ...event, ...decryptedAnswersObject[screenKey] },
+        rawAnswersObject,
+        index: event.type === UserActionType.SetAnswer ? indexForABTrailsFiles++ : indexForABTrailsFiles,
+      });
+    } catch (error) {
+      return undefined;
+    }
+  });
+  return activityJourneyData.concat(...events).filter(Boolean);
+};
+
 // --- csvSanitization.ts ----------------------------------------------------
 const DANGEROUS_CSV_CHARS = /^[=+\-@\t\r\n]/;
 function sanitizeCSVValue(value) {
@@ -662,15 +906,17 @@ function sanitizeCSVValue(value) {
 const sanitizeRow = (row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, sanitizeCSVValue(value)]));
 
 // --- run (prepareDecryptedData order) ---------------------------------------
-const output = input.submissions.map(({ answer, activity, answersDecrypted }) => {
+const output = input.submissions.map(({ answer, activity, answersDecrypted, eventsDecrypted = [] }) => {
   const withActivity = { ...answer, items: activity.items, activityName: activity.name, subscaleSetting: activity.subscaleSetting };
   const remapped = remapFailed(getDecryptedAnswers(withActivity, answersDecrypted));
   const [{ decryptedAnswers: decrypted }] = getAnswersWithPublicUrls([{ decryptedAnswers: remapped }]);
+  const decryptedEvents = eventsDecrypted.filter(isSuccessEvent); // remapFailedAnswers
   const rawAnswersObject = getObjectFromList(decrypted, (item) => item.activityItem.name);
   return {
     rows: getReportData(rawAnswersObject, decrypted).map(sanitizeRow),
     media: getMediaData([], decrypted),
     unity: getUnityData([], decrypted),
+    journey: getActivityJourneyData([], rawAnswersObject, decrypted, decryptedEvents).map(sanitizeRow),
   };
 });
 process.stdout.write(JSON.stringify(output));

@@ -11,6 +11,7 @@ from typing import Any
 
 from .client import CuriousClient
 from .crypto import AppletDecryptor, DecryptionError
+from .journey import journey_rows
 from .jscompat import UNDEFINED, get, nullish
 from .media import MediaFile, collect_media, with_public_urls
 from .report import report_row
@@ -69,6 +70,9 @@ class ExportResult:
     failures: list[DecryptionFailure]
     decrypted: list[dict]
     media: list[MediaFile] = field(default_factory=list)
+    journey: list[dict] = field(default_factory=list)
+    # Submissions whose answers were exported but whose user actions could not be decrypted.
+    journey_failures: list[DecryptionFailure] = field(default_factory=list)
 
 
 ProgressCallback = Callable[[int, int], None]
@@ -187,11 +191,14 @@ def build_export(
     null_when_skipped: bool = False,
     keep_decrypted: bool = False,
     include_media: bool = False,
+    include_journey: bool = False,
 ) -> ExportResult:
     rows: list[dict] = []
     failures: list[DecryptionFailure] = []
     decrypted: list[dict] = []
     media: list[MediaFile] = []
+    journey: list[dict] = []
+    journey_failures: list[DecryptionFailure] = []
     downloaded = kept = 0
 
     for answer in answers:
@@ -215,16 +222,20 @@ def build_export(
             except DecryptionError as e:
                 failures.append(_failure(answer, activity_name, str(e)))
                 continue
-            if keep_decrypted and answer.get("events"):
+            if (keep_decrypted or include_journey) and answer.get("events"):
                 try:
                     events = decryptor.decrypt_json(answer["userPublicKey"], answer["events"])
-                except DecryptionError:
+                except DecryptionError as e:
                     events = None
+                    if include_journey:
+                        journey_failures.append(_failure(answer, activity_name, f"user actions: {e}"))
 
         records = prepare_records(answer, activity, answers_decrypted)
         rows.extend(rows_for_submission(records, null_when_skipped=null_when_skipped))
         if include_media:
             media.extend(collect_media(records))
+        if include_journey:
+            journey.extend(journey_rows(records, events))
 
         if keep_decrypted:
             decrypted.append(
@@ -242,7 +253,7 @@ def build_export(
                 }
             )
 
-    return ExportResult(rows, downloaded, kept, failures, decrypted, media)
+    return ExportResult(rows, downloaded, kept, failures, decrypted, media, journey, journey_failures)
 
 
 def write_jsonl(path, records: list[dict]) -> None:

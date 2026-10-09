@@ -351,6 +351,7 @@ $("ans-run").onclick = async () => {
     activityIds,
     flowIds,
     media: $("ans-media").checked,
+    journey: $("ans-journey").checked,
     outputDir: $("ans-output").value,
     pageSize: Number($("ans-page-size").value) || 500,
     saveDecrypted: $("ans-save-decrypted").checked,
@@ -513,6 +514,7 @@ function appendResult(card, job) {
   if (job.kind === "answers") {
     let text = `${result.submissions.toLocaleString()} submission(s) → ${result.rows.toLocaleString()} rows in responses.csv`;
     if (result.media) text += ` · media: ${result.media.saved} of ${result.media.files} file(s) saved`;
+    if (result.journey) text += ` · journey: ${result.journey.rows.toLocaleString()} action(s)`;
     card.append(el("div", { class: "job-summary" }, text));
     card.append(el("div", { class: "job-folder" }, result.folder));
   } else if (job.kind === "dictionary") {

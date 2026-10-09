@@ -42,7 +42,9 @@ def make_client(monkeypatch, tmp_path):
 
 
 def login(client: TestClient, email: str = fake_server.EMAIL, password: str = fake_server.PASSWORD) -> None:
-    response = client.post("/api/login", json={"server": "https://api.curious.test", "email": email, "password": password})
+    response = client.post(
+        "/api/login", json={"server": "https://api.curious.test", "email": email, "password": password}
+    )
     assert response.status_code == 200, response.text
     assert response.json().get("ok")
 
@@ -140,9 +142,7 @@ def test_answers_end_to_end(make_client, tmp_path):
     assert unlocked.status_code == 200 and unlocked.json()["keyVariant"] == "browser"
     assert client.get(f"/api/applets/{applet_id}").json()["unlocked"]
 
-    started = client.post(
-        "/api/jobs/answers", json={"appletId": applet_id, "outputDir": str(tmp_path / "out")}
-    )
+    started = client.post("/api/jobs/answers", json={"appletId": applet_id, "outputDir": str(tmp_path / "out")})
     assert started.status_code == 200, started.text
     job = wait_for(client, started.json()["jobId"])
     assert job["status"] == "done", job["error"]
@@ -157,9 +157,7 @@ def test_answers_end_to_end(make_client, tmp_path):
 def test_answers_requires_unlock_first(make_client, tmp_path):
     client = make_client(fake_server.FakeCurious())
     login(client)
-    response = client.post(
-        "/api/jobs/answers", json={"appletId": corpus.APPLET_ID, "outputDir": str(tmp_path / "out")}
-    )
+    response = client.post("/api/jobs/answers", json={"appletId": corpus.APPLET_ID, "outputDir": str(tmp_path / "out")})
     assert response.status_code == 400 and "Unlock" in response.json()["error"]
 
 
@@ -188,6 +186,25 @@ def test_answers_with_participant_filter_and_media(make_client, tmp_path):
     assert job["result"]["media"]["saved"] == job["result"]["media"]["files"] - job["result"]["media"]["failed"]
     rows = read_csv(folder / "responses.csv")
     assert {row["userId"] for row in rows if row.get("userId")}, "filtered export still has rows"
+
+
+def test_answers_with_journey(make_client, tmp_path):
+    client = make_client(fake_server.FakeCurious())
+    login(client)
+    client.post(f"/api/applets/{corpus.APPLET_ID}/unlock", json={"password": fake_server.APPLET_PASSWORD})
+
+    started = client.post(
+        "/api/jobs/answers",
+        json={"appletId": corpus.APPLET_ID, "journey": True, "outputDir": str(tmp_path / "out")},
+    )
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+
+    folder = Path(job["result"]["folder"])
+    journey = read_csv(folder / "activity_user_journey.csv")
+    assert journey and job["result"]["journey"] == {"rows": len(journey), "failed": 1}
+    assert any("actions" in warning for warning in job["warnings"])
+    assert "--journey" in job["result"]["command"]
 
 
 # -- data dictionary ----------------------------------------------------------------------

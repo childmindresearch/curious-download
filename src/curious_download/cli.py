@@ -26,6 +26,7 @@ from .crypto import AppletDecryptor, AppletPasswordError
 from .csvout import file_slug, write_csv
 from .dictionary import INDEX_COLUMNS, build_dictionaries, fetch_history, write_dictionaries
 from .export import DEFAULT_PAGE_SIZE, ExportFilters, build_export, download_answers, write_jsonl
+from .journey import JOURNEY_COLUMNS, JOURNEY_FILE_NAME, journey_info
 from .media import STATUS_DOWNLOADED, STATUS_FAILED, STATUS_FROM_ANSWER, download_media, write_manifest
 from .report import REPORT_COLUMNS
 
@@ -299,7 +300,16 @@ def _progress(label: str) -> Progress:
 
 
 def _equivalent_command(
-    server: str, email: str, applet_id: str, participants, start, end, activity_labels, output, media: bool
+    server: str,
+    email: str,
+    applet_id: str,
+    participants,
+    start,
+    end,
+    activity_labels,
+    output,
+    media: bool,
+    journey: bool = False,
 ):
     parts = ["curious-download", "--server", server, "--email", email, "--applet", applet_id]
     for participant in participants:
@@ -315,6 +325,8 @@ def _equivalent_command(
             parts += ["--activity", label]
     if media:
         parts.append("--media")
+    if journey:
+        parts.append("--journey")
     parts += ["--output", str(output)]
     return " ".join(shlex.quote(part) for part in parts)
 
@@ -486,6 +498,13 @@ def download(
         bool | None,
         typer.Option("--media/--no-media", help="Also download photos, video, audio, drawings, and Unity task files."),
     ] = None,
+    journey: Annotated[
+        bool | None,
+        typer.Option(
+            "--journey/--no-journey",
+            help="Also write activity_user_journey.csv: each next, back, undo, skip, answer, and done action with its time.",
+        ),
+    ] = None,
     mfa_code: Annotated[str | None, typer.Option(help="Two-factor code, if your account uses MFA.")] = None,
     no_input: Annotated[bool, typer.Option(help="Never prompt; anything not given means 'all'.")] = False,
     version: Annotated[bool, typer.Option("--version", help="Show the version and exit.")] = False,
@@ -514,6 +533,7 @@ def download(
             ("--activity", activity),
             ("--flow", flow),
             ("--media", media),
+            ("--journey", journey),
             ("--save-decrypted", save_decrypted),
         )
         if given
@@ -589,6 +609,12 @@ def download(
                 media = ask_filters and _ask(
                     questionary.confirm("Also download media files (photos, video, audio, drawings)?", default=False)
                 )
+            if journey is None:
+                journey = ask_filters and _ask(
+                    questionary.confirm(
+                        "Also download the participant journey (activity_user_journey.csv)?", default=False
+                    )
+                )
 
             summary = Table(show_header=False, box=None)
             summary.add_row("Applet", applet_name)
@@ -597,6 +623,7 @@ def download(
             summary.add_row("To (UTC)", filters.api_to or "now")
             summary.add_row("Activities", ", ".join(activity_labels) or "all")
             summary.add_row("Media files", "yes" if media else "no")
+            summary.add_row("Participant journey", "yes" if journey else "no")
             console.print(summary)
             if interactive and not _ask(questionary.confirm("Download now?", default=True)):
                 raise typer.Exit(1)
@@ -619,11 +646,14 @@ def download(
                 null_when_skipped=subscale_null_when_skipped,
                 keep_decrypted=save_decrypted,
                 include_media=bool(media),
+                include_journey=bool(journey),
             )
 
             export_dir = output / f"{file_slug(applet_name)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
             export_dir.mkdir(parents=True, exist_ok=True)
             write_csv(export_dir / "responses.csv", result.rows, REPORT_COLUMNS)
+            if journey:
+                write_csv(export_dir / JOURNEY_FILE_NAME, result.journey, JOURNEY_COLUMNS)
             if save_decrypted:
                 write_jsonl(export_dir / "decrypted_answers.jsonl", result.decrypted)
 
@@ -666,6 +696,7 @@ def download(
                     for status in (STATUS_DOWNLOADED, STATUS_FROM_ANSWER, STATUS_FAILED)
                 },
             },
+            "journey": journey_info(bool(journey), result.journey, result.journey_failures),
         }
         (export_dir / "export_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False))
 
@@ -685,11 +716,27 @@ def download(
                     f"[yellow]{media_counts[STATUS_FAILED]} media file(s) could not be downloaded; "
                     f"see media_files.csv.[/yellow]"
                 )
+        if journey:
+            console.print(f"Participant journey: {len(result.journey)} actions in [bold]{JOURNEY_FILE_NAME}[/bold]")
+            if result.journey_failures:
+                console.print(
+                    f"[yellow]The actions of {len(result.journey_failures)} submission(s) could not be decrypted; "
+                    f"see export_info.json.[/yellow]"
+                )
         if interactive:
             console.print("\nTo repeat this download without the questions:")
             console.print(
                 _equivalent_command(
-                    server, email, details["id"], participants, start, end, activity_labels, output, bool(media)
+                    server,
+                    email,
+                    details["id"],
+                    participants,
+                    start,
+                    end,
+                    activity_labels,
+                    output,
+                    bool(media),
+                    bool(journey),
                 ),
                 soft_wrap=True,
                 highlight=False,

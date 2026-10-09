@@ -15,6 +15,7 @@ from ..crypto import AppletDecryptor
 from ..csvout import file_slug, write_csv
 from ..dictionary import INDEX_COLUMNS, build_dictionaries, fetch_history, write_dictionaries
 from ..export import DEFAULT_PAGE_SIZE, ExportFilters, build_export, download_answers, write_jsonl
+from ..journey import JOURNEY_COLUMNS, JOURNEY_FILE_NAME, journey_info
 from ..media import STATUS_DOWNLOADED, STATUS_FAILED, STATUS_FROM_ANSWER, download_media, write_manifest
 from ..participant_counts import COLUMNS as COUNT_COLUMNS
 from ..participant_counts import count_workspace
@@ -43,6 +44,7 @@ def run_answers(
     activity_labels: list[str],
     media: bool,
     output: Path,
+    journey: bool = False,
     page_size: int = DEFAULT_PAGE_SIZE,
     save_decrypted: bool = False,
     null_when_skipped: bool = False,
@@ -67,11 +69,14 @@ def run_answers(
         null_when_skipped=null_when_skipped,
         keep_decrypted=save_decrypted,
         include_media=media,
+        include_journey=journey,
     )
 
     export_dir = output / f"{file_slug(applet_name)}_{_timestamp()}"
     export_dir.mkdir(parents=True, exist_ok=True)
     write_csv(export_dir / "responses.csv", result.rows, REPORT_COLUMNS)
+    if journey:
+        write_csv(export_dir / JOURNEY_FILE_NAME, result.journey, JOURNEY_COLUMNS)
     if save_decrypted:
         write_jsonl(export_dir / "decrypted_answers.jsonl", result.decrypted)
 
@@ -108,8 +113,11 @@ def run_answers(
         "media": {
             "requested": media,
             "files": len(media_outcomes),
-            **{status: media_counts.get(status, 0) for status in (STATUS_DOWNLOADED, STATUS_FROM_ANSWER, STATUS_FAILED)},
+            **{
+                status: media_counts.get(status, 0) for status in (STATUS_DOWNLOADED, STATUS_FROM_ANSWER, STATUS_FAILED)
+            },
         },
+        "journey": journey_info(journey, result.journey, result.journey_failures),
     }
     (export_dir / "export_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False))
 
@@ -117,6 +125,10 @@ def run_answers(
         job.warn(f"{len(result.failures)} submission(s) could not be decrypted; see export_info.json.")
     if media_counts[STATUS_FAILED]:
         job.warn(f"{media_counts[STATUS_FAILED]} media file(s) could not be downloaded; see media_files.csv.")
+    if result.journey_failures:
+        job.warn(
+            f"The actions of {len(result.journey_failures)} submission(s) could not be decrypted; see export_info.json."
+        )
 
     return {
         "folder": str(export_dir),
@@ -131,8 +143,18 @@ def run_answers(
         }
         if media
         else None,
+        "journey": {"rows": len(result.journey), "failed": len(result.journey_failures)} if journey else None,
         "command": _equivalent_command(
-            server, email, details["id"], participants, filters.from_utc, filters.to_utc, activity_labels, output, media
+            server,
+            email,
+            details["id"],
+            participants,
+            filters.from_utc,
+            filters.to_utc,
+            activity_labels,
+            output,
+            media,
+            journey,
         ),
     }
 

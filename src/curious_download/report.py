@@ -265,9 +265,18 @@ def parse_response_value_raw(record: dict, index: int, answer: Any) -> Any:
     return f"{to_string(corrected_key)}: {rendered}"
 
 
-def parse_response_value(record: dict, index: int) -> str:
-    """parseResponseValue: the `item_response` cell."""
-    answer = record.get("answer")
+def parse_response_value(record: dict, index: int, *, is_event: bool = False) -> str:
+    """parseResponseValue: the `item_response` cell.
+
+    With `is_event` the record is a user action merged with its item (journey rows): only
+    SET_ANSWER actions carry an answer, the response recorded at that moment.
+    """
+    if not is_event:
+        answer = record.get("answer")
+    elif record.get("type") == "SET_ANSWER":
+        answer = coalesce(record.get("response", UNDEFINED), record.get("answer", UNDEFINED))
+    else:
+        answer = UNDEFINED
     edited = get(answer, "edited") if isinstance(answer, dict) else UNDEFINED
     edited_label = f" | edited: {to_string(edited)}" if truthy(edited) else ""
     response_value = parse_response_value_raw(record, index, answer)

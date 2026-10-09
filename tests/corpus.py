@@ -328,7 +328,130 @@ def submissions() -> list[dict]:
         (answer_record("s4"), scored, [{"value": 9}, None, {"value": 7}, {"value": [5]}, {"value": 9}, None]),
     ]
 
+    legacy = {
+        **activity(LEGACY_ITEMS, name="Legacy"),
+        "id": LEGACY_ACTIVITY_ID,
+        "idVersion": f"{LEGACY_ACTIVITY_ID}_1.0.0",
+    }
+    cases += [
+        (
+            answer_record(
+                "l1",
+                activityId=LEGACY_ACTIVITY_ID,
+                activityHistoryId=f"{LEGACY_ACTIVITY_ID}_1.0.0",
+                migratedDate="2023-08-01T00:00:00",
+            ),
+            legacy,
+            [{"value": 2}, "legacy text"],
+        ),
+        (answer_record("g1"), full, ALL_TYPES_ANSWERS),
+        (answer_record("j1"), full, ALL_TYPES_ANSWERS),
+    ]
+
+    events = journey_events()
     return [
-        {"answer": copy.deepcopy(a), "activity": copy.deepcopy(act), "answersDecrypted": copy.deepcopy(ans)}
+        {
+            "answer": copy.deepcopy(a),
+            "activity": copy.deepcopy(act),
+            "answersDecrypted": copy.deepcopy(ans),
+            "eventsDecrypted": copy.deepcopy(events.get(a["id"], [])),
+        }
         for a, act, ans in cases
     ]
+
+
+# -- user actions (journey) -------------------------------------------------
+
+LEGACY_ACTIVITY_ID = "64c23b53-8819-c178-d236-685e00000000"
+LEGACY_ITEMS = [
+    {**item("legacy_mood", "singleSelect", _options("singleSelect")), "id": "64c23b53-8819-c178-d236-685f00000000"},
+    {**item("legacy_note", "text"), "id": "64c23b53-8819-c178-d236-686000000000"},
+]
+GITHUB_SCREEN = "https://raw.githubusercontent.com/ChildMindInstitute/NIMH_EMA_applet/master/activities/EMA/items/"
+
+
+def _screen(name: str) -> str:
+    return f"{ACTIVITY_ID}/item-{name}"
+
+
+def _event(kind: str, screen: str, time, **extra) -> dict:
+    return {"type": kind, "screen": screen, "time": time, **extra}
+
+
+def journey_events() -> dict[str, list[dict]]:
+    """Decrypted `events` per answer id, shaped like the app's UserActionDto."""
+    t = 1749138592000
+    trails = {
+        "value": {"width": 300, "startTime": 1, "updated": True, "currentIndex": 8, "maximumIndex": 8, "lines": []}
+    }
+    return {
+        "a1": [
+            _event("NEXT", f"{ACTIVITY_ID}/undefined", t),  # splash screen
+            _event("SET_ANSWER", _screen("mood"), t + 1, response={"value": 0}),
+            _event("SET_ANSWER", _screen("mood"), t + 2, response={"value": 1, "text": "extra note"}),
+            _event("NEXT", _screen("mood"), t + 3),
+            _event("SET_ANSWER", _screen("feelings"), t + 4, response={"value": [2, 0]}),
+            _event("PREV", _screen("feelings"), t + 5),
+            _event("UNDO", _screen("mood"), t + 6),
+            _event("SET_ANSWER", _screen("name"), t + 7, response="+1 (555) 123"),
+            _event("SKIP", _screen("story"), t + 8),
+            _event("SKIP_POPUP_CONFIRM", _screen("story"), t + 9),
+            _event("SKIP_POPUP_CANCEL", _screen("bedtime"), t + 10),
+            _event(
+                "SET_ANSWER",
+                _screen("sleep"),
+                t + 11,
+                response={"value": {"from": {"hour": 23, "minute": 0}, "to": None}},
+            ),
+            _event("SET_ANSWER", _screen("selfie"), t + 12, response={"value": "s3://bucket/x/IMG_1.jpg"}),
+            _event("SET_ANSWER", _screen("clip"), t + 13, response={"value": None}),  # superseded recording
+            _event("SET_ANSWER", _screen("trails"), t + 14, response=trails),
+            _event(
+                "SET_ANSWER",
+                _screen("sketch"),
+                t + 15,
+                response={"value": {"svgString": "<svg/>", "uri": "s3://b/x.svg"}},
+            ),
+            _event("SET_ANSWER", _screen("secret"), t + 16, response="hidden"),  # hidden item: no row
+            _event("NEXT", "unknown/screen", t + 17),  # no matching item: no row
+            {"type": "", "time": "", "screen": ""},  # failed decryption placeholder
+            {"type": "NEXT", "screen": _screen("count")},  # no time: the admin drops it
+            _event("SET_ANSWER", _screen("count"), t + 18),  # no response: falls back to the final answer
+            _event("SET_ANSWER", _screen("grid_multi"), t + 19, response={"value": [["A"], None, ["B"]]}),
+            _event("WEIRD", _screen("where"), t + 20),
+            _event("SET_ANSWER", _screen("trails"), t + 21, response=trails),
+            _event("DONE", _screen("listen"), 1749138600000.5),
+        ],
+        "a2": [
+            _event("SET_ANSWER", _screen("mood"), t, response={"text": "only text"}),
+            _event("SKIP", _screen("feelings"), t + 1),
+            _event("DONE", _screen("energy"), t + 2),
+        ],
+        "a5": [
+            _event("SET_ANSWER", _screen("mood"), t, response={"value": 2}),
+            _event("NEXT", _screen("mood"), t + 1),
+            _event("DONE", _screen("energy"), t + 2),
+        ],
+        "s1": [
+            _event("SET_ANSWER", f"{ACTIVITY_ID}/item-q1", t, response={"value": 0}),
+            _event("SET_ANSWER", f"{ACTIVITY_ID}/item-q3", t + 1, response={"value": 2}),
+            _event("DONE", f"{ACTIVITY_ID}/item-q3", t + 2),
+        ],
+        "l1": [
+            _event("NEXT", "64c23b538819c178d236685e/splash", t),
+            _event("SET_ANSWER", "64c23b538819c178d236685e/64c23b538819c178d236685f", t + 1, response={"value": 2}),
+            _event("SET_ANSWER", "64c23b538819c178d236685e/64c23b538819c178d2366860", t + 2, response="legacy text"),
+            _event("DONE", "64c23b538819c178d236685e/64c23b538819c178d2366860", t + 3),
+        ],
+        "g1": [
+            _event("SET_ANSWER", GITHUB_SCREEN + "mood", t, response={"value": 1}),
+            _event("NEXT", _screen("feelings"), t + 1),  # not a URL: last path part isn't an item name
+            _event("SET_ANSWER", GITHUB_SCREEN + "name", t + 2, response="typed"),
+            _event("DONE", GITHUB_SCREEN + "name", t + 3),
+        ],
+        "j1": [
+            _event("NEXT", "unknown/first", t),  # splash, but the next action has no item: no row
+            _event("NEXT", "unknown/second", t + 1),
+            _event("SET_ANSWER", _screen("mood"), t + 2, response={"value": 2}),
+        ],
+    }

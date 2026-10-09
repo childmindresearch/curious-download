@@ -67,6 +67,7 @@ curious-download --no-input \
 | `--from`, `--to` | Dates (`YYYY-MM-DD`) or datetimes in **your local time**; converted to UTC and compared with the time the server received each answer |
 | `--activity`, `-a` / `--flow` | Activity or flow name or ID (repeatable) |
 | `--media` | Also download the media files of the selected answers (photos, video, audio, drawings, Unity task files) |
+| `--journey` | Also write `activity_user_journey.csv`, the participant journey: every next, back, undo, skip, answer, and done action with its time |
 | `--mfa-code` | Two-factor code for scripted runs |
 | `--page-size` | Answers per request (default 500, max 10000) |
 | `--save-decrypted` | Also write `decrypted_answers.jsonl` with the raw decrypted answers and events |
@@ -95,6 +96,21 @@ With `--media`, the folder also contains:
   saved from the SVG stored in the answer); or `failed`, with the reason, for example a file the
   phone never uploaded or one the server refused to share. The admin panel skips such files
   silently; here they are listed. The file is written even when there are no media files.
+
+With `--journey` (the app's "participant journey" checkbox), the folder also contains:
+
+- **`activity_user_journey.csv`**: the admin panel's user-journey export, with the same 41 columns
+  and cell format. There is one row per action the participant took in the app. The time (ms since
+  1970, from the phone's clock) goes in the column for that action: `press_next_time`,
+  `press_back_time`, `press_undo_time`, `press_skip_time`, `press_popup_skip_time`,
+  `press_popup_keep_time`, `press_done_time`, or `response_option_selection_time` for an answer.
+  Answer rows show the response chosen at that moment in `item_response`, so changed answers show
+  up as several rows. A first action taken before the first item (a splash screen) gets an
+  `item_name` of `Splash Screen`. The same participant, date, and activity filters apply.
+
+The actions are stored encrypted separately from the answers. If they can't be decrypted for a
+submission, its answers are still exported and `export_info.json` lists it under
+`journey.actions_decryption_failures`; the admin panel leaves such submissions out silently.
 
 Rows are ordered newest first, like the admin export. Unlike the admin, everything goes into
 one file instead of one file per 250 answers, and media go into folders instead of zips.
@@ -132,7 +148,7 @@ It starts a small server on your own computer and opens the app in your browser.
 then pick a task:
 
 - **Download answers** — choose a workspace, an applet (unlocked with its applet password),
-  participants, a date range, activities, and optionally media files.
+  participants, a date range, activities, and optionally media files and the participant journey.
 - **Data dictionary** — choose a workspace and all or some of its applets.
 - **Participant counts** — choose a workspace and a date range; the table is shown in the page
   and saved as a CSV.
@@ -291,7 +307,6 @@ applet:
 
 These are produced by the admin export but not by this tool yet:
 
-- `activity_user_journey.csv`.
 - The per-task CSVs for drawing, AB Trails, stability tracker, and flanker.
 - EHR data.
 
@@ -310,7 +325,8 @@ Node.js is needed for two kinds of test:
 - `tests/js_oracle/admin_export.js` holds the admin panel's export functions, copied with only
   the TypeScript types removed. The parity tests run them and the Python port on the same
   synthetic submissions (`tests/corpus.py`, every item type and the known edge cases) and
-  require identical cells and column order, and identical media file names and URLs.
+  require identical cells and column order (for `responses.csv` and `activity_user_journey.csv`),
+  and identical media file names and URLs.
 - `tests/js_oracle/crypto_oracle.js` encrypts answers with Node's crypto exactly as the mobile
   app does. The Python side must decrypt them.
 

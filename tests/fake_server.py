@@ -24,6 +24,8 @@ from . import corpus
 OWNER_ID = "66666666-6666-4666-8666-666666666666"
 SCORED_ACTIVITY_ID = "77777777-7777-4777-8777-777777777777"
 SECOND_SUBJECT = "88888888-8888-4888-8888-888888888888"
+# This answer's user actions are stored as ciphertext that cannot be decrypted.
+UNREADABLE_ACTIONS = "e3"
 EMAIL = "researcher@example.org"
 PASSWORD = "account-pw"
 APPLET_PASSWORD = "applet-pw"
@@ -60,6 +62,7 @@ class FakeCurious:
             )
         }
         self.plain_answers: dict[str, list] = {}
+        self.plain_events: dict[str, list] = {}
         self.answers = self._make_answers(prime, applet_private)
 
     def _encrypt_for(self, respondent: str, plaintext: str, prime: int, applet_private: int) -> tuple[str, str]:
@@ -78,11 +81,23 @@ class FakeCurious:
             ("e4", corpus.SUBJECT_ID, "P001", f"{SCORED_ACTIVITY_ID}_2.2.4", [None, {"value": 1}, {"value": 1}, {"value": [2]}, {"value": 1}, None], "2026-09-20T12:00:00"),
             ("e5", corpus.SUBJECT_ID, "P001", f"{SCORED_ACTIVITY_ID}_2.2.4", ["11", None, {"value": 2}, None, {"value": 3}, None], "2026-08-01T12:00:00"),
         ]  # fmt: skip
+        t = 1757000000000
+        actions = {
+            "e1": corpus.journey_events()["a1"],
+            "e2": [
+                {"type": "SET_ANSWER", "screen": f"{SCORED_ACTIVITY_ID}/item-q1", "time": t, "response": {"value": 0}},
+                {"type": "NEXT", "screen": f"{SCORED_ACTIVITY_ID}/item-q1", "time": t + 1},
+                {"type": "DONE", "screen": f"{SCORED_ACTIVITY_ID}/item-q3", "time": t + 2},
+            ],
+        }
         answers = []
         for answer_id, subject, secret, history_id, plain, created in plan:
             activity = self.activities[history_id]
             public_key, ciphertext = self._encrypt_for(subject, json.dumps(plain), prime, applet_private)
-            _, events = self._encrypt_for(subject, json.dumps([]), prime, applet_private)
+            _, events = self._encrypt_for(subject, json.dumps(actions.get(answer_id, [])), prime, applet_private)
+            if answer_id == UNREADABLE_ACTIONS:
+                events = "00" * 16 + ":" + "11" * 32
+            self.plain_events[answer_id] = actions.get(answer_id, [])
             record = corpus.answer_record(
                 answer_id,
                 activityHistoryId=history_id,

@@ -2,8 +2,8 @@
 
 tests/js_oracle/admin_export.js holds the admin functions copied verbatim (types removed);
 this test runs both implementations on the same synthetic submissions and compares
-every row, cell, and column order of responses.csv, and the files (names and URLs)
-the admin would put in its media and unity zips.
+every row, cell, and column order of responses.csv and activity_user_journey.csv, and
+the files (names and URLs) the admin would put in its media and unity zips.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import pytest
 
 from curious_download.csvout import sanitize_value
 from curious_download.export import prepare_records, rows_for_submission
+from curious_download.journey import JOURNEY_COLUMNS, journey_rows
 from curious_download.media import MEDIA_FOLDER, UNITY_FOLDER, collect_media
 
 from .corpus import submissions
@@ -44,6 +45,28 @@ def _python_media(case: dict, folder: str) -> list[dict]:
         for file in collect_media(records)
         if file.folder == folder
     ]
+
+
+def _python_journey(case: dict) -> list[dict]:
+    records = prepare_records(case["answer"], case["activity"], case["answersDecrypted"])
+    rows = journey_rows(records, case["eventsDecrypted"])
+    return [{key: sanitize_value(value) for key, value in row.items()} for row in rows]
+
+
+def test_journey_matches_admin_export():
+    cases = submissions()
+    expected = _admin_output(cases, False)
+    total = 0
+    for case, admin in zip(cases, expected, strict=True):
+        label = case["answer"]["id"]
+        mine = _python_journey(case)
+        assert len(mine) == len(admin["journey"]), f"{label}: journey row count"
+        for index, (row, theirs) in enumerate(zip(mine, admin["journey"], strict=True)):
+            assert list(row) == list(theirs) == JOURNEY_COLUMNS, f"{label} journey row {index}: columns"
+            for column in theirs:
+                assert row[column] == theirs[column], f"{label} journey row {index} column {column}"
+        total += len(admin["journey"])
+    assert total >= 30, "the corpus should exercise the journey"
 
 
 @pytest.mark.parametrize("null_when_skipped", [False, True])
