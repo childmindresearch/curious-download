@@ -197,6 +197,18 @@ class CuriousClient:
         """Applet details: encryption, activities and activityFlows (without items)."""
         return self._get(f"/applets/{applet_id}")["result"]
 
+    def applet_versions(self, applet_id: str) -> list[dict]:
+        """Every saved version, newest first: [{version, createdAt, creator}]. Any applet role may call it."""
+        return self._get(f"/applets/{applet_id}/versions")["result"]
+
+    def applet_version(self, applet_id: str, version: str) -> dict:
+        """One version with its activities, items, and flows.
+
+        Unlike the other endpoints, the stored JSON inside items (responseValues, config,
+        conditionalLogic, subscaleSetting) is returned as saved, which is usually snake_case.
+        """
+        return self._get(f"/applets/{applet_id}/versions/{version}")["result"]
+
     def participants(self, owner_id: str, applet_id: str) -> list[Participant]:
         rows = self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", {"limit": 10000})["result"]
         found: dict[str, Participant] = {}

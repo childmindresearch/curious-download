@@ -36,6 +36,11 @@ def _csv_field(text: str) -> str:
     return text
 
 
+def file_slug(text: str) -> str:
+    """A name that is safe in file names."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_") or "applet"
+
+
 def header_for(rows: Iterable[dict], base_columns: list[str]) -> list[str]:
     """SheetJS json_to_sheet header: keys in order of first appearance."""
     header = list(base_columns)

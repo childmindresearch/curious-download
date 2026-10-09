@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Curious app</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Curious <span>app</span></div>
+    <div id="session-info" class="session" hidden>
+      <span id="session-label"></span>
+      <button id="logout-btn" class="ghost" type="button">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- missing or wrong app token -->
+    <section id="view-token-error" class="card narrow" hidden>
+      <h1>Can't connect to the app</h1>
+      <p>This page is missing its app token. Open the app again using the link printed in the
+        terminal window where <code>curious-app</code> is running — or restart
+        <code>curious-app</code> to get a fresh link.</p>
+    </section>
+
+    <!-- login -->
+    <section id="view-login" class="card narrow" hidden>
+      <h1>Log in to Curious</h1>
+      <form id="login-form">
+        <label>Curious API address
+          <input id="login-server" type="text" placeholder="https://…" autocomplete="url" required>
+          <small>The address of the backend API, not the admin website.</small>
+        </label>
+        <label>Email
+          <input id="login-email" type="email" autocomplete="username" required>
+        </label>
+        <label>Password
+          <input id="login-password" type="password" autocomplete="current-password" required>
+        </label>
+        <label id="login-mfa-row" hidden>Two-factor code
+          <input id="login-mfa" inputmode="numeric" autocomplete="one-time-code"
+                 placeholder="6 digits, or a recovery code">
+        </label>
+        <div id="login-error" class="error" hidden></div>
+        <button type="submit" id="login-btn" class="primary">Log in</button>
+      </form>
+      <p class="fineprint">Your passwords are only sent to the server above and are never saved.</p>
+    </section>
+
+    <!-- main -->
+    <section id="view-main" hidden>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="answers" type="button">Download answers</button>
+        <button class="tab" data-tab="dictionary" type="button">Data dictionary</button>
+        <button class="tab" data-tab="counts" type="button">Participant counts</button>
+      </nav>
+
+      <!-- ============ answers ============ -->
+      <section id="tab-answers" class="card task">
+        <p class="task-help">Download and decrypt answers into a <code>responses.csv</code> in the same
+          format as the admin panel's export, optionally with the media files.</p>
+
+        <div class="field-grid">
+          <label>Workspace
+            <select id="ans-workspace"></select>
+          </label>
+          <label>Applet
+            <select id="ans-applet"></select>
+          </label>
+        </div>
+
+        <div id="ans-unlock" class="unlock-row" hidden>
+          <label>Applet password
+            <input id="ans-applet-password" type="password" autocomplete="off">
+          </label>
+          <button id="ans-unlock-btn" class="primary" type="button">Unlock</button>
+        </div>
+        <div id="ans-unlock-status" class="unlock-status" hidden></div>
+
+        <div id="ans-filters" hidden>
+          <div class="pick">
+            <label>Participants
+              <select id="ans-participants-mode">
+                <option value="all">All participants</option>
+                <option value="some">Choose participants…</option>
+              </select>
+            </label>
+            <div class="checklist" id="ans-participants-list" hidden>
+              <input type="search" placeholder="Search participants…">
+              <div class="options"></div>
+            </div>
+          </div>
+
+          <div class="pick">
+            <label>Date range
+              <select id="ans-daterange">
+                <option value="all">All time</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="custom">Custom range…</option>
+              </select>
+            </label>
+            <div class="date-pair" id="ans-dates" hidden>
+              <label>From <input type="date" id="ans-from"></label>
+              <label>To <input type="date" id="ans-to"></label>
+              <small>Your local time; blank means no limit on that side.</small>
+            </div>
+          </div>
+
+          <div class="pick">
+            <label>Activities
+              <select id="ans-activities-mode">
+                <option value="all">All activities</option>
+                <option value="some">Choose activities…</option>
+              </select>
+            </label>
+            <div class="checklist" id="ans-activities-list" hidden>
+              <input type="search" placeholder="Search activities…">
+              <div class="options"></div>
+            </div>
+          </div>
+
+          <label class="checkbox-row">
+            <input type="checkbox" id="ans-media">
+            Also download media files (photos, video, audio, drawings, Unity task files)
+          </label>
+
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <label class="checkbox-row">
+              <input type="checkbox" id="ans-save-decrypted">
+              Also save the raw decrypted answers (<code>decrypted_answers.jsonl</code>)
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="ans-null-when-skipped">
+              Score skipped items as missing instead of 0 (admin feature flag)
+            </label>
+            <label class="inline-number">Answers per request
+              <input type="number" id="ans-page-size" value="500" min="1" max="10000">
+            </label>
+          </details>
+
+          <label>Save into
+            <span class="output-row">
+              <input id="ans-output" class="output-input" type="text" spellcheck="false">
+              <button class="ghost" type="button" data-browse="ans-output">Browse…</button>
+            </span>
+          </label>
+
+          <div id="ans-error" class="error" hidden></div>
+          <button id="ans-run" class="primary run" type="button">Download answers</button>
+        </div>
+      </section>
+
+      <!-- ============ data dictionary ============ -->
+      <section id="tab-dictionary" class="card task" hidden>
+        <p class="task-help">One CSV per activity describing its items (prompts, response options, scores,
+          skip logic) across every saved version of the applet. No applet password is needed.</p>
+
+        <div class="field-grid">
+          <label>Workspace
+            <select id="dict-workspace"></select>
+          </label>
+          <label>Applets
+            <select id="dict-mode">
+              <option value="all">All applets in this workspace</option>
+              <option value="some">Choose applets…</option>
+            </select>
+          </label>
+        </div>
+        <div class="checklist" id="dict-applets-list" hidden>
+          <input type="search" placeholder="Search applets…">
+          <div class="options"></div>
+        </div>
+
+        <label>Save into
+          <span class="output-row">
+            <input id="dict-output" class="output-input" type="text" spellcheck="false">
+            <button class="ghost" type="button" data-browse="dict-output">Browse…</button>
+          </span>
+        </label>
+
+        <div id="dict-error" class="error" hidden></div>
+        <button id="dict-run" class="primary run" type="button">Download data dictionaries</button>
+        <p class="fineprint">An often-edited applet can have hundreds of saved versions (one request each),
+          so this can take a minute or two per applet.</p>
+      </section>
+
+      <!-- ============ participant counts ============ -->
+      <section id="tab-counts" class="card task" hidden>
+        <p class="task-help">For every applet in a workspace: how many participants submitted data, how many
+          submissions, and when the first and last one arrived. Reads only submission metadata — no answers
+          are downloaded and no applet passwords are needed.</p>
+
+        <div class="field-grid">
+          <label>Workspace
+            <select id="counts-workspace"></select>
+          </label>
+          <label>Date range
+            <select id="counts-daterange">
+              <option value="all">All time</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="custom">Custom range…</option>
+            </select>
+          </label>
+        </div>
+        <div class="date-pair" id="counts-dates" hidden>
+          <label>From <input type="date" id="counts-from"></label>
+          <label>To <input type="date" id="counts-to"></label>
+          <small>Your local time; blank means no limit on that side.</small>
+        </div>
+
+        <label>Save into
+          <span class="output-row">
+            <input id="counts-output" class="output-input" type="text" spellcheck="false">
+            <button class="ghost" type="button" data-browse="counts-output">Browse…</button>
+          </span>
+        </label>
+
+        <div id="counts-error" class="error" hidden></div>
+        <button id="counts-run" class="primary run" type="button">Count participants</button>
+      </section>
+
+      <!-- ============ runs ============ -->
+      <section id="jobs-panel">
+        <h2>Runs</h2>
+        <div id="job-list"><p class="fineprint" id="jobs-empty">Nothing has run yet. Results will appear here.</p></div>
+      </section>
+    </section>
+  </main>
+
+  <!-- folder picker -->
+  <div id="browse-modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h2>Choose a folder</h2>
+      <div class="browse-path" id="browse-path"></div>
+      <div class="browse-list" id="browse-list"></div>
+      <div class="modal-buttons">
+        <button class="ghost" id="browse-cancel" type="button">Cancel</button>
+        <button class="primary" id="browse-choose" type="button">Use this folder</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -19,7 +19,7 @@ FINAL_TEXT_COLUMN = "activity_score_lookup_text"
 AGE_ITEM = "age_screen"
 GENDER_ITEM = "gender_screen"
 INTERVAL_SYMBOL = "~"
-_TOTAL_SCORE_TYPES = ("singleSelect", "multiSelect", "slider")
+TOTAL_SCORE_TYPES = ("singleSelect", "multiSelect", "slider")
 
 
 def _js_round(value: float) -> float:
@@ -63,7 +63,7 @@ def subscale_score(total: Any, scoring: Any, length: int, max_score: float) -> A
     return 0
 
 
-def _is_system_item(item: dict) -> bool:
+def is_system_item(item: dict) -> bool:
     return not truthy(item.get("allowEdit")) and item.get("name") in (AGE_ITEM, GENDER_ITEM)
 
 
@@ -176,7 +176,7 @@ def calc_scores(
             continue
 
         record = activity_items.get(item.get("name"))
-        if _is_system_item(item) or (record is not None and truthy(record["activityItem"].get("isHidden"))):
+        if is_system_item(item) or (record is not None and truthy(record["activityItem"].get("isHidden"))):
             continue
 
         answer = record["answer"] if record is not None else UNDEFINED
@@ -217,7 +217,7 @@ def _total_score(setting: dict, activity_items: dict, null_when_skipped: bool) -
     items = [
         {"name": name, "type": "item", "allowEdit": record["activityItem"].get("allowEdit")}
         for name, record in activity_items.items()
-        if record["activityItem"].get("responseType") in _TOTAL_SCORE_TYPES
+        if record["activityItem"].get("responseType") in TOTAL_SCORE_TYPES
     ]
     subscale = {
         "name": FINAL_SUBSCALE_KEY,
@@ -228,7 +228,7 @@ def _total_score(setting: dict, activity_items: dict, null_when_skipped: bool) -
     return calc_scores(subscale, activity_items, {}, null_when_skipped)
 
 
-def _clean_name(name: str) -> str:
+def clean_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9-]", "_", name)
 
 
@@ -246,7 +246,7 @@ def subscale_columns(setting: Any, activity_items: dict, *, null_when_skipped: b
         )
         if not calculated:
             continue
-        cleaned = _clean_name(to_string(subscale.get("name")))
+        cleaned = clean_name(to_string(subscale.get("name")))
         parsed[f"subscale_name_{cleaned}"] = calculated["score"]
         if truthy(calculated["optionText"]):
             parsed[f"subscale_lookup_text_{cleaned}"] = calculated["optionText"]

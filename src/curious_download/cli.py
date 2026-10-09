@@ -16,13 +16,15 @@ import httpx
 import questionary
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from . import __version__
 from .client import EXPORT_ROLES, ApiError, CuriousClient, MfaRequiredError, Participant
 from .crypto import AppletDecryptor, AppletPasswordError
-from .csvout import write_csv
+from .csvout import file_slug, write_csv
+from .dictionary import INDEX_COLUMNS, build_dictionaries, fetch_history, write_dictionaries
 from .export import DEFAULT_PAGE_SIZE, ExportFilters, build_export, download_answers, write_jsonl
 from .media import STATUS_DOWNLOADED, STATUS_FAILED, STATUS_FROM_ANSWER, download_media, write_manifest
 from .report import REPORT_COLUMNS
@@ -86,10 +88,6 @@ def _valid_day(text: str) -> bool | str:
     return True
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_") or "applet"
-
-
 # -- steps ------------------------------------------------------------------
 
 
@@ -116,7 +114,44 @@ def _login(client: CuriousClient, email: str, password: str | None, mfa_code: st
             raise
 
 
-def _resolve_applet(client: CuriousClient, applet: str | None, interactive: bool) -> tuple[dict, str]:
+def _choose_workspace(client: CuriousClient, workspace: str | None, interactive: bool) -> dict:
+    workspaces = client.workspaces()
+    if not workspaces:
+        raise UsageError("Your account has no workspaces.")
+    names = ", ".join(repr(w.get("workspaceName") or w["ownerId"]) for w in workspaces)
+    if workspace:
+        for candidate in workspaces:
+            if candidate["ownerId"] == workspace or (candidate.get("workspaceName") or "").lower() == workspace.lower():
+                return candidate
+        raise UsageError(f"No workspace called {workspace!r}. Available: {names}")
+    if len(workspaces) == 1:
+        return workspaces[0]
+    if not interactive:
+        raise UsageError(f"You have several workspaces; pass --workspace (name or owner ID). Available: {names}")
+    return _ask(
+        questionary.select(
+            "Workspace:",
+            choices=[questionary.Choice(w.get("workspaceName") or w["ownerId"], w) for w in workspaces],
+        )
+    )
+
+
+def _find_applet(client: CuriousClient, key: str, workspace: str | None) -> tuple[dict, str]:
+    """Find an applet by ID or exact name. Returns (workspace applet row, workspace owner id)."""
+    workspaces = [_choose_workspace(client, workspace, interactive=False)] if workspace else client.workspaces()
+    for candidate in workspaces:
+        for row in client.workspace_applets(candidate["ownerId"]):
+            if row.get("type") == "folder":
+                continue
+            if row.get("id") == key or (row.get("displayName") or "").lower() == key.lower():
+                return row, candidate["ownerId"]
+    where = f"the workspace {workspace!r}" if workspace else "your workspaces"
+    raise UsageError(f"No applet called {key!r} in {where}.")
+
+
+def _resolve_applet(
+    client: CuriousClient, applet: str | None, workspace: str | None, interactive: bool
+) -> tuple[dict, str]:
     """Return (applet details, workspace owner id)."""
     if applet and _UUID.match(applet):
         details = client.applet(applet)
@@ -124,30 +159,15 @@ def _resolve_applet(client: CuriousClient, applet: str | None, interactive: bool
         if owner_id:
             return details, owner_id
 
-    workspaces = client.workspaces()
-    if not workspaces:
-        raise UsageError("Your account has no workspaces with applets you can export.")
-
     if applet:
-        for workspace in workspaces:
-            for row in client.workspace_applets(workspace["ownerId"]):
-                if row.get("id") == applet or (row.get("displayName") or "").lower() == applet.lower():
-                    return client.applet(row["id"]), workspace["ownerId"]
-        raise UsageError(f"No applet called {applet!r} in your workspaces.")
+        row, owner_id = _find_applet(client, applet, workspace)
+        return client.applet(row["id"]), owner_id
 
     if not interactive:
         raise UsageError("No applet given. Pass --applet (ID or name).")
 
-    if len(workspaces) == 1:
-        workspace = workspaces[0]
-    else:
-        workspace = _ask(
-            questionary.select(
-                "Workspace:",
-                choices=[questionary.Choice(w.get("workspaceName") or w["ownerId"], w) for w in workspaces],
-            )
-        )
-    rows = [row for row in client.workspace_applets(workspace["ownerId"]) if row.get("role") in EXPORT_ROLES]
+    chosen = _choose_workspace(client, workspace, interactive)
+    rows = [row for row in client.workspace_applets(chosen["ownerId"]) if row.get("role") in EXPORT_ROLES]
     if not rows:
         raise UsageError("You don't have an owner, manager, or reviewer role on any applet in this workspace.")
     rows.sort(key=lambda row: (row.get("displayName") or "").lower())
@@ -159,7 +179,7 @@ def _resolve_applet(client: CuriousClient, applet: str | None, interactive: bool
             use_jk_keys=False,
         )
     )
-    return client.applet(choice["id"]), workspace["ownerId"]
+    return client.applet(choice["id"]), chosen["ownerId"]
 
 
 def _unlock_applet(details: dict, applet_password: str | None, interactive: bool) -> AppletDecryptor:
@@ -299,6 +319,127 @@ def _equivalent_command(
     return " ".join(shlex.quote(part) for part in parts)
 
 
+# -- data dictionaries --------------------------------------------------------
+
+
+def _choose_dictionary_applets(
+    client: CuriousClient, applets: list[str], all_applets: bool, workspace: str | None, interactive: bool
+) -> tuple[list[dict], str, dict | None]:
+    """Return (workspace applet rows, a name for the output folder, the workspace if all its applets were chosen)."""
+    if applets and all_applets:
+        raise UsageError("Use either --applet or --all-applets, not both.")
+    if applets:
+        found = {}
+        for key in applets:
+            row, _ = _find_applet(client, key, workspace)
+            found[row["id"]] = row
+        rows = list(found.values())
+        return rows, (rows[0].get("displayName") or rows[0]["id"]) if len(rows) == 1 else "applets", None
+    if not all_applets and not interactive:
+        raise UsageError("No applet given. Pass --applet (repeat for several) or --all-applets.")
+
+    chosen = _choose_workspace(client, workspace, interactive)
+    workspace_name = chosen.get("workspaceName") or chosen["ownerId"]
+    rows = [row for row in client.workspace_applets(chosen["ownerId"]) if row.get("type") != "folder"]
+    rows.sort(key=lambda row: (row.get("displayName") or "").lower())
+    if not rows:
+        raise UsageError(f"The workspace {workspace_name!r} has no applets.")
+    if all_applets:
+        return rows, workspace_name, chosen
+    mode = _ask(questionary.select("Applets:", choices=["All applets in this workspace", "Choose applets…"]))
+    if mode == "All applets in this workspace":
+        return rows, workspace_name, chosen
+    picked = _ask(
+        questionary.checkbox(
+            "Select applets (space to toggle, type to search, enter to confirm):",
+            choices=[questionary.Choice(f"{row.get('displayName')}  ({row.get('role')})", row) for row in rows],
+            validate=lambda selected: bool(selected) or "Select at least one applet.",
+            use_search_filter=True,
+            use_jk_keys=False,
+        )
+    )
+    return picked, (picked[0].get("displayName") or picked[0]["id"]) if len(picked) == 1 else workspace_name, None
+
+
+def _download_dictionaries(
+    client: CuriousClient,
+    server: str,
+    email: str,
+    applets: list[str],
+    all_applets: bool,
+    workspace: str | None,
+    output: Path,
+    interactive: bool,
+) -> None:
+    """Write one data dictionary CSV per activity of each chosen applet, plus index.csv."""
+    rows, scope, whole_workspace = _choose_dictionary_applets(client, applets, all_applets, workspace, interactive)
+    folder = output / f"data_dictionary_{file_slug(scope)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    index_rows: list[dict] = []
+    applet_info: list[dict] = []
+    used_names: set[str] = set()
+    with _progress("{task.description}") as progress:
+        for row in rows:
+            name = row.get("displayName") or row["id"]
+            task = progress.add_task(escape(name), total=None)
+            try:
+                history = fetch_history(
+                    client,
+                    row["id"],
+                    name,
+                    on_progress=lambda done, total, task=task: progress.update(task, completed=done, total=total),
+                )
+            except ApiError as e:
+                note = "no access to this applet" if e.status_code == 403 else f"error: {e}"
+                index_rows.append({"applet_id": row["id"], "applet_name": name, "note": note})
+                applet_info.append({"id": row["id"], "name": name, "error": note})
+                progress.remove_task(task)
+                continue
+            dictionaries = build_dictionaries(history)
+            written = write_dictionaries(folder, history, dictionaries, used_names)
+            index_rows += written or [{"applet_id": row["id"], "applet_name": name, "note": "no activities"}]
+            applet_info.append(
+                {
+                    "id": row["id"],
+                    "name": name,
+                    "versions": len(history.versions),
+                    "current_version": history.versions[-1] if history.versions else None,
+                    "activities": len(dictionaries),
+                }
+            )
+    write_csv(folder / "index.csv", index_rows, INDEX_COLUMNS)
+
+    files = sum(1 for index_row in index_rows if index_row.get("file"))
+    info = {
+        "tool": f"curious-download {__version__}",
+        "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "server": server,
+        "kind": "data dictionary",
+        "workspace": (whole_workspace.get("workspaceName") or whole_workspace["ownerId"]) if whole_workspace else None,
+        "applets": applet_info,
+        "files": files,
+    }
+    (folder / "export_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False))
+
+    failed = [applet for applet in applet_info if applet.get("error")]
+    console.print(
+        f"[green]Done.[/green] {files} data dictionaries from {len(rows) - len(failed)} applet(s) in [bold]{folder}[/bold]"
+    )
+    for applet in failed:
+        console.print(f"[yellow]{escape(applet['name'])}: {escape(applet['error'])}[/yellow]")
+    if interactive:
+        parts = ["curious-download", "--dictionary", "--server", server, "--email", email]
+        if whole_workspace:
+            parts += ["--all-applets", "--workspace", whole_workspace["ownerId"]]
+        else:
+            for row in rows:
+                parts += ["--applet", row["id"]]
+        parts += ["--output", str(output)]
+        console.print("\nTo repeat this download without the questions:")
+        console.print(" ".join(shlex.quote(part) for part in parts), soft_wrap=True, highlight=False)
+
+
 # -- command ----------------------------------------------------------------
 
 
@@ -308,7 +449,20 @@ def download(
         typer.Option(envvar="CURIOUS_API_URL", help="Curious API address (the backend, not the admin site)."),
     ] = None,
     email: Annotated[str | None, typer.Option(envvar="CURIOUS_EMAIL", help="Your Curious login email.")] = None,
-    applet: Annotated[str | None, typer.Option(help="Applet ID or exact name.")] = None,
+    applet: Annotated[
+        list[str] | None,
+        typer.Option("--applet", help="Applet ID or exact name. Repeat for several data dictionaries."),
+    ] = None,
+    dictionary: Annotated[
+        bool,
+        typer.Option(
+            "--dictionary", help="Download data dictionaries (the items of every activity, across all applet versions)."
+        ),
+    ] = False,
+    all_applets: Annotated[
+        bool, typer.Option("--all-applets", help="With --dictionary: every applet in the workspace.")
+    ] = False,
+    workspace: Annotated[str | None, typer.Option(help="Workspace name or owner ID.")] = None,
     participant: Annotated[
         list[str] | None, typer.Option("--participant", "-p", help="Participant secret ID (repeat for several).")
     ] = None,
@@ -336,7 +490,8 @@ def download(
     no_input: Annotated[bool, typer.Option(help="Never prompt; anything not given means 'all'.")] = False,
     version: Annotated[bool, typer.Option("--version", help="Show the version and exit.")] = False,
 ) -> None:
-    """Download and decrypt Curious answers into an admin-compatible responses.csv.
+    """Download and decrypt Curious answers into an admin-compatible responses.csv,
+    or (with --dictionary) download data dictionaries of applets.
 
     Run it without options for a step-by-step wizard. Every answer can also be
     given as an option, so the same download can be scripted and re-run.
@@ -350,9 +505,41 @@ def download(
     interactive = not no_input and sys.stdin.isatty()
     # Ask about filters only when the user didn't give any on the command line.
     ask_filters = interactive and not (participant or from_date or to_date or activity or flow)
+    answer_options = [
+        name
+        for name, given in (
+            ("--participant", participant),
+            ("--from", from_date),
+            ("--to", to_date),
+            ("--activity", activity),
+            ("--flow", flow),
+            ("--media", media),
+            ("--save-decrypted", save_decrypted),
+        )
+        if given
+    ]
     settings = _load_settings()
 
     try:
+        if not dictionary and interactive and not answer_options and not all_applets:
+            dictionary = _ask(
+                questionary.select(
+                    "What would you like to download?",
+                    choices=[
+                        questionary.Choice("Answers (responses.csv)", False),
+                        questionary.Choice(
+                            "Data dictionary (the items of each activity, across applet versions)", True
+                        ),
+                    ],
+                )
+            )
+        if dictionary and answer_options:
+            raise UsageError(f"{', '.join(answer_options)} only apply to answer downloads, not --dictionary.")
+        if not dictionary and all_applets:
+            raise UsageError("--all-applets only applies to --dictionary.")
+        if not dictionary and applet and len(applet) > 1:
+            raise UsageError("Answers are downloaded one applet at a time; pass a single --applet.")
+
         if not server:
             if not interactive:
                 raise UsageError("No server given. Pass --server or set CURIOUS_API_URL.")
@@ -373,7 +560,11 @@ def download(
             _save_settings(server=server, email=email)
             console.print(f"[green]Logged in[/green] as {email}")
 
-            details, owner_id = _resolve_applet(client, applet, interactive)
+            if dictionary:
+                _download_dictionaries(client, server, email, applet or [], all_applets, workspace, output, interactive)
+                return
+
+            details, owner_id = _resolve_applet(client, applet[0] if applet else None, workspace, interactive)
             applet_name = details.get("displayName") or details["id"]
             decryptor = _unlock_applet(details, os.environ.get("CURIOUS_APPLET_PASSWORD"), interactive)
             console.print(f"[green]Applet unlocked:[/green] {applet_name}")
@@ -430,7 +621,7 @@ def download(
                 include_media=bool(media),
             )
 
-            export_dir = output / f"{_slug(applet_name)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
+            export_dir = output / f"{file_slug(applet_name)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
             export_dir.mkdir(parents=True, exist_ok=True)
             write_csv(export_dir / "responses.csv", result.rows, REPORT_COLUMNS)
             if save_decrypted:

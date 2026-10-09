@@ -17,9 +17,19 @@ import typer
 from rich.table import Table
 
 from . import __version__
-from .cli import UsageError, _ask, _load_settings, _login, _parse_day, _progress, _save_settings, _slug, console
+from .cli import (
+    UsageError,
+    _ask,
+    _choose_workspace,
+    _load_settings,
+    _login,
+    _parse_day,
+    _progress,
+    _save_settings,
+    console,
+)
 from .client import ApiError, CuriousClient
-from .csvout import write_csv
+from .csvout import file_slug, write_csv
 from .export import DEFAULT_PAGE_SIZE, ExportFilters
 
 # Submission rows carry no answer content, so a large page is cheap (the backend's maximum).
@@ -69,9 +79,17 @@ class Tally:
 class SubmissionCounter:
     """Counts submitters per applet from submission metadata; never downloads or decrypts answers."""
 
-    def __init__(self, client: CuriousClient, filters: ExportFilters):
+    def __init__(
+        self,
+        client: CuriousClient,
+        filters: ExportFilters,
+        on_page: Callable[[int, int], None] | None = None,
+    ):
         self.client = client
         self.filters = filters
+        # Called after every page request with (rows seen, rows total) for the current applet.
+        # Lets a UI show progress inside a large applet — and abort between requests by raising.
+        self.on_page = on_page
         # Older backends lack /submissions; then the (heavier) export endpoint gives the same metadata.
         self.has_submissions_endpoint = True
 
@@ -89,6 +107,7 @@ class SubmissionCounter:
     def _from_submissions(self, applet_id: str) -> Tally:
         tally = Tally()
         reviewer_activities: set[str] | None = None
+        fetched = 0
         page = 1
         while True:
             body = self.client.submissions_page(
@@ -99,6 +118,9 @@ class SubmissionCounter:
                 to_date=self.filters.api_to,
             )
             rows = body.get("submissions") or []
+            fetched += len(rows)
+            if self.on_page:
+                self.on_page(fetched, body.get("submissionsCount") or 0)
             if rows and reviewer_activities is None:
                 # For owners and managers the list includes reviewers' assessments, which aren't
                 # participant data. They are answers to reviewer-only (reviewable) activities.
@@ -114,6 +136,7 @@ class SubmissionCounter:
 
     def _from_answer_export(self, applet_id: str) -> Tally:
         tally = Tally()
+        fetched = 0
         page = 1
         while True:
             body = self.client.export_page(
@@ -124,6 +147,9 @@ class SubmissionCounter:
                 to_date=self.filters.api_to,
             )
             answers = (body.get("result") or {}).get("answers") or []
+            fetched += len(answers)
+            if self.on_page:
+                self.on_page(fetched, body.get("count") or 0)
             for answer in answers:
                 if answer.get("reviewedAnswerId"):
                     continue  # a reviewer's assessment
@@ -143,11 +169,20 @@ def count_workspace(
     applets: list[dict],
     filters: ExportFilters,
     on_progress: Callable[[int, int], None] | None = None,
+    *,
+    on_applet: Callable[[int, int, dict], None] | None = None,
+    on_page: Callable[[int, int], None] | None = None,
 ) -> list[dict]:
-    """One CSV row per applet. Applets that can't be counted get a note instead of numbers."""
-    counter = SubmissionCounter(client, filters)
+    """One CSV row per applet. Applets that can't be counted get a note instead of numbers.
+
+    `on_applet(number, total, applet)` is called before each applet, `on_page` after every
+    page request within one (see SubmissionCounter), `on_progress(done, total)` after each.
+    """
+    counter = SubmissionCounter(client, filters, on_page=on_page)
     rows = []
     for done, applet in enumerate(applets, start=1):
+        if on_applet:
+            on_applet(done, len(applets), applet)
         role = applet.get("role") or ""
         row = {"applet_id": applet["id"], "applet_name": applet.get("displayName") or "", "your_role": role}
         try:
@@ -167,28 +202,6 @@ def count_workspace(
         if on_progress:
             on_progress(done, len(applets))
     return rows
-
-
-def _choose_workspace(client: CuriousClient, workspace: str | None, interactive: bool) -> dict:
-    workspaces = client.workspaces()
-    if not workspaces:
-        raise UsageError("Your account has no workspaces.")
-    names = ", ".join(repr(w.get("workspaceName") or w["ownerId"]) for w in workspaces)
-    if workspace:
-        for candidate in workspaces:
-            if candidate["ownerId"] == workspace or (candidate.get("workspaceName") or "").lower() == workspace.lower():
-                return candidate
-        raise UsageError(f"No workspace called {workspace!r}. Available: {names}")
-    if len(workspaces) == 1:
-        return workspaces[0]
-    if not interactive:
-        raise UsageError(f"You have several workspaces; pass --workspace (name or owner ID). Available: {names}")
-    return _ask(
-        questionary.select(
-            "Workspace:",
-            choices=[questionary.Choice(w.get("workspaceName") or w["ownerId"], w) for w in workspaces],
-        )
-    )
 
 
 def _print_table(rows: list[dict], workspace_name: str) -> None:
@@ -295,7 +308,7 @@ def participant_counts(
 
         output.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
-        csv_path = output / f"participant_counts_{_slug(workspace_name)}_{stamp}.csv"
+        csv_path = output / f"participant_counts_{file_slug(workspace_name)}_{stamp}.csv"
         write_csv(csv_path, rows, COLUMNS)
 
         _print_table(rows, workspace_name)

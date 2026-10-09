@@ -5,6 +5,12 @@ participant, date range, and activity. The output is a `responses.csv` in the sa
 the admin panel's **Export data** (renamed-column version), so the existing
 `mindlogger-data-export` post-processing tool and transformation scripts can read it.
 
+The same command also downloads [data dictionaries](#data-dictionaries): one CSV per activity
+describing its items across every version of the applet.
+
+Prefer point-and-click? [`curious-app`](#the-app-curious-app) runs the same downloads
+(answers, data dictionaries, and participant counts) from a page in your browser.
+
 ## Install
 
 Requires Python 3.11+.
@@ -29,8 +35,9 @@ Run it with no options and answer the questions:
 curious-download
 ```
 
-It asks for the API address, your email and password (plus a 6-digit code if your account uses
-MFA), then the applet and its applet password. Then you choose participants, a date range, and
+It first asks whether you want answers or a data dictionary. For answers, it then asks for the API
+address, your email and password (plus a 6-digit code if your account uses MFA), then the applet
+and its applet password. Then you choose participants, a date range, and
 activities. At the end it prints the equivalent command, so you can repeat the same download
 without the questions.
 
@@ -55,6 +62,7 @@ curious-download --no-input \
 | `--server` / `CURIOUS_API_URL` | Address of the Curious **backend API**, not the admin website |
 | `--email` / `CURIOUS_EMAIL` | Your login |
 | `--applet` | Applet ID or exact name |
+| `--workspace` | Workspace name or owner ID, if you have several and want to narrow the applet search |
 | `--participant`, `-p` | Participant secret ID (repeatable). Matches the participant the answers are **about** (target subject), as in the admin panel's per-participant export |
 | `--from`, `--to` | Dates (`YYYY-MM-DD`) or datetimes in **your local time**; converted to UTC and compared with the time the server received each answer |
 | `--activity`, `-a` / `--flow` | Activity or flow name or ID (repeatable) |
@@ -111,6 +119,126 @@ one file instead of one file per 250 answers, and media go into folders instead 
 conversion that depends on how the browser's `Buffer` polyfill decodes invalid UTF-8. Native
 Node and Python decode it differently. The tool tries both and keeps the one that matches the
 applet's public key. `export_info.json` records which one matched (`key_variant`).
+
+## The app (`curious-app`)
+
+The same three downloads as a local web app, for anyone who prefers forms over a terminal:
+
+```bash
+curious-app
+```
+
+It starts a small server on your own computer and opens the app in your browser. Log in once,
+then pick a task:
+
+- **Download answers** — choose a workspace, an applet (unlocked with its applet password),
+  participants, a date range, activities, and optionally media files.
+- **Data dictionary** — choose a workspace and all or some of its applets.
+- **Participant counts** — choose a workspace and a date range; the table is shown in the page
+  and saved as a CSV.
+
+Runs appear at the bottom with a progress bar and can be cancelled. Each finished run shows
+what was written, a **Show in Finder** button, and the equivalent terminal command, so a
+download set up by clicking can be repeated or scheduled as a script later. Files are written
+to a folder you choose (`~/curious_exports` by default), in exactly the same formats as the
+CLI tools.
+
+Notes:
+
+- Everything runs locally: the page talks only to the server on your computer, which talks
+  only to the Curious API you log in to. Passwords stay in memory and are never written to disk.
+- The page only works with the tokened link that `curious-app` prints (and opens) — another
+  website or user on the computer cannot reach the API behind it.
+- Keep the terminal window open while you use the app; Ctrl+C stops it.
+- `--port` chooses the port (default 8456; the next free one is used if taken) and
+  `--no-browser` skips opening the browser.
+
+## Data dictionaries
+
+A data dictionary describes the items (questions) of each activity: prompt, type, response
+options, scores, skip logic, and more. Every saved version of the applet is included, so changes
+to a question over the course of a study are visible.
+
+In the wizard, choose **Data dictionary** at the first question, then pick a workspace and either
+all of its applets or some of them. In scripts:
+
+```bash
+curious-download --dictionary --no-input --server https://<curious-api-address> \
+  --email you@example.org --applet "EMA Study" --applet "Sleep Study"
+curious-download --dictionary --no-input --server https://<curious-api-address> \
+  --email you@example.org --all-applets --workspace "My Lab"
+```
+
+No applet password is needed, because nothing is decrypted and no answers are downloaded. Any
+role on an applet works, including editor and coordinator.
+
+Each run writes a folder `<output>/data_dictionary_<applet or workspace>_<timestamp>/` containing:
+
+- **`<applet>__<activity>__data_dictionary.csv`**: one file per activity. Activities deleted in a
+  later version are included, because answers to them stay on the server. If two activities would
+  get the same file name, their IDs are added to it.
+- **`index.csv`**: one row per file, with the number of items, how many of them changed, the first
+  and last version, the status (`current` or `removed in <version>`), and notes such as
+  `reviewer assessment`. Applets that couldn't be read are listed here with the reason.
+- **`export_info.json`**: the tool version, server, and the version count of each applet.
+
+### Rows and versions
+
+Each row is one **definition** of an item. An item that never changed has one row. When an edit
+changes it, a new row starts:
+
+| item_name | first_version | last_version | status | change |
+|---|---|---|---|---|
+| mood | 1.0.0 | 1.0.1 | changed in 1.1.0 | |
+| mood | 1.1.0 | 2.0.0 | current | response options; scores |
+| energy | 1.1.0 | 2.0.0 | current | added |
+| sleep_hours | 1.0.0 | 1.1.0 | removed in 2.0.0 | |
+
+`applet_versions` lists every version a row covers. To find the definition that applies to an
+answer, match the answer's `applet_version` in responses.csv with this list, and its `item_id` (or
+`item_name`) with the row's. Items are followed by their ID, so a renamed item stays one item
+(`renamed (was …)`).
+
+| Column | Meaning |
+|---|---|
+| `activity_flows` | Flows that included the activity while this definition was in use |
+| `item_order` | The item's position in the activity, in the last version the row covers |
+| `item_id`, `item_name`, `item_type` | As in responses.csv |
+| `item_prompt` | The question text, in English if the applet has it, otherwise its first language |
+| `item_response_options` | Exactly the `item_response_options` cell responses.csv has for this item |
+| `value_labels` | `value=label` for each option, e.g. `0=Never \| 1=Sometimes`. Sliders: the labelled ends. Grids: the column options |
+| `scores` | `value=score` for scored items; for grids, per row |
+| `min_value`, `max_value`, `min_label`, `max_label` | Sliders and number selections |
+| `rows` | Grid rows; for slider grids, with their range and end labels |
+| `response_rules` | Limits and settings that shape the answer: maximum characters, numbers only, correct answer, response required, audio length, time limit, random option order, continuous slider |
+| `other_text_option` | `optional` or `required` when the item has an extra free-text box |
+| `skippable` | `yes` or `no`; blank for items without a response, such as messages |
+| `hidden` | Hidden items are not shown to participants and are not in responses.csv |
+| `shown_if` | Skip logic, e.g. `mood = "Often" (1) AND sleep > 6` |
+| `first_version`, `last_version`, `applet_versions` | The applet versions in which this definition was in effect |
+| `status` | `current`, `changed in <version>` (the next row starts there), or `removed in <version>` |
+| `change` | How the row differs from the item's previous row. Blank for an item's first row if it existed when the activity was created; otherwise one or more of: `added`, `added again`, `renamed (was …)`, `item ID changed (was …)`, `item type`, `prompt`, `response options`, `scores`, `alerts`, `appearance` (colors, images, tooltips), `skip logic`, `now hidden`, `no longer hidden`, `settings: …` |
+
+After the items come the **score rows**, named like the score columns of responses.csv:
+`activity_score`, `activity_score_lookup_text`, `subscale_name_<name>`, and
+`subscale_lookup_text_<name>`. Their `item_type` is `total_score`, `subscale_score`, or
+`lookup_text`. `item_prompt` says how the score is computed (e.g. `Subscale Anxiety: Average of q1,
+q2`), and `value_labels` holds the lookup table (e.g. `raw 0~4 -> 50 (sex F, age 8~12, Mild):
+Typical`). They follow the admin's rules: score columns exist only when the activity has at least
+one subscale, and hidden items are left out of the total.
+
+Notes:
+
+- The dictionary needs one request per version. The admin panel saves a new version every time an
+  applet is changed, so an often-edited applet can have hundreds of versions and take a minute or
+  two.
+- Every saved version is covered, including versions that never collected data.
+- A change to any translation of a prompt counts as a `prompt` change, even if the English text
+  shown in the file stayed the same.
+- The data comes from `GET /applets/{id}/versions` and `GET /applets/{id}/versions/{version}`. The
+  admin panel doesn't use the second endpoint. It returns item settings as they were stored, usually
+  in snake_case (`min_value`) rather than the camelCase (`minValue`) used elsewhere in the API, so the
+  tool accepts both.
 
 ## Participant counts per applet
 
@@ -187,4 +315,6 @@ Node.js is needed for two kinds of test:
   app does. The Python side must decrypt them.
 
 `tests/test_cli.py` runs the whole command against an in-memory fake server: MFA, token refresh,
-paging, filters, and the files written.
+paging, filters, and the files written. `tests/test_webapp.py` runs the web app's API against the
+same fake servers: login and MFA, applet unlocking, all three downloads end to end, and the
+app-token check.
