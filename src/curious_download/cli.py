@@ -331,6 +331,18 @@ def _equivalent_command(
     return " ".join(shlex.quote(part) for part in parts)
 
 
+def dictionary_command(server: str, email: str, rows: list[dict], whole_workspace: dict | None, output) -> str:
+    """The data dictionary command that repeats a download without the questions."""
+    parts = ["curious-download", "--dictionary", "--server", server, "--email", email]
+    if whole_workspace:
+        parts += ["--all-applets", "--workspace", whole_workspace["ownerId"]]
+    else:
+        for row in rows:
+            parts += ["--applet", row["id"]]
+    parts += ["--output", str(output)]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
 # -- data dictionaries --------------------------------------------------------
 
 
@@ -423,9 +435,11 @@ def _download_dictionaries(
     write_csv(folder / "index.csv", index_rows, INDEX_COLUMNS)
 
     files = sum(1 for index_row in index_rows if index_row.get("file"))
+    command = dictionary_command(server, email, rows, whole_workspace, output)
     info = {
         "tool": f"curious-download {__version__}",
         "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "command": command,
         "server": server,
         "kind": "data dictionary",
         "workspace": (whole_workspace.get("workspaceName") or whole_workspace["ownerId"]) if whole_workspace else None,
@@ -441,15 +455,8 @@ def _download_dictionaries(
     for applet in failed:
         console.print(f"[yellow]{escape(applet['name'])}: {escape(applet['error'])}[/yellow]")
     if interactive:
-        parts = ["curious-download", "--dictionary", "--server", server, "--email", email]
-        if whole_workspace:
-            parts += ["--all-applets", "--workspace", whole_workspace["ownerId"]]
-        else:
-            for row in rows:
-                parts += ["--applet", row["id"]]
-        parts += ["--output", str(output)]
         console.print("\nTo repeat this download without the questions:")
-        console.print(" ".join(shlex.quote(part) for part in parts), soft_wrap=True, highlight=False)
+        console.print(command, soft_wrap=True, highlight=False)
 
 
 # -- command ----------------------------------------------------------------
@@ -672,9 +679,13 @@ def download(
                 write_manifest(export_dir / "media_files.csv", media_outcomes)
 
         media_counts = Counter(outcome.status for outcome in media_outcomes)
+        command = _equivalent_command(
+            server, email, details["id"], participants, start, end, activity_labels, output, bool(media), bool(journey)
+        )
         info = {
             "tool": f"curious-download {__version__}",
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "command": command,
             "server": server,
             "applet": {"id": details["id"], "name": applet_name, "version": details.get("version")},
             "filters": {
@@ -726,18 +737,7 @@ def download(
         if interactive:
             console.print("\nTo repeat this download without the questions:")
             console.print(
-                _equivalent_command(
-                    server,
-                    email,
-                    details["id"],
-                    participants,
-                    start,
-                    end,
-                    activity_labels,
-                    output,
-                    bool(media),
-                    bool(journey),
-                ),
+                command,
                 soft_wrap=True,
                 highlight=False,
             )

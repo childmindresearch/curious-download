@@ -365,6 +365,8 @@ def test_index_and_info(run):
 
     info = json.loads((folder / "export_info.json").read_text())
     assert info["kind"] == "data dictionary" and info["workspace"] == "Lab" and info["files"] == 3
+    assert info["command"].startswith("curious-download --dictionary ") and "--all-applets" in info["command"]
+    assert PASSWORD not in info["command"]
     assert info["applets"][0] == {
         "id": EMA,
         "name": "EMA Study",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -252,3 +253,31 @@ def test_no_journey_by_default(run):
     assert not (export_dir / "activity_user_journey.csv").exists()
     info = json.loads((export_dir / "export_info.json").read_text())
     assert info["journey"] == {"requested": False, "rows": 0, "actions_decryption_failures": []}
+
+
+def test_export_info_records_a_command_that_repeats_the_export(run):
+    server = FakeCurious()
+    result, export_dir = run(
+        server, "--participant", "P001", "--activity", "Scored", "--from", "2026-09-01", "--journey"
+    )
+    assert result.exit_code == 0, result.output
+    command = json.loads((export_dir / "export_info.json").read_text())["command"]
+    args = shlex.split(command)
+    assert args[0] == "curious-download"
+    for expected in ("--applet", corpus.APPLET_ID, "--participant", "P001", "--activity", "Scored", "--journey"):
+        assert expected in args
+    assert "--from" in args and "--media" not in args
+    assert PASSWORD not in command and APPLET_PASSWORD not in command
+    responses = (export_dir / "responses.csv").read_bytes()
+    journey = (export_dir / "activity_user_journey.csv").read_bytes()
+
+    # Run exactly the recorded command again; scripted runs add --no-input and pass passwords by environment.
+    app = typer.Typer()
+    app.command()(cli.download)
+    env = {"CURIOUS_PASSWORD": PASSWORD, "CURIOUS_APPLET_PASSWORD": APPLET_PASSWORD}
+    result = CliRunner().invoke(app, [*args[1:], "--no-input"], env=env)
+    assert result.exit_code == 0, result.output
+    replay_dir = max(export_dir.parent.glob("*/responses.csv")).parent
+    assert (replay_dir / "responses.csv").read_bytes() == responses
+    assert (replay_dir / "activity_user_journey.csv").read_bytes() == journey
+    assert json.loads((replay_dir / "export_info.json").read_text())["command"] == command

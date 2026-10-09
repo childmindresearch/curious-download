@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import threading
 import time
 from pathlib import Path
@@ -152,6 +153,7 @@ def test_answers_end_to_end(make_client, tmp_path):
     rows = read_csv(folder / "responses.csv")
     assert len(rows) == int(job["result"]["rows"]) and (folder / "export_info.json").exists()
     assert "--applet" in job["result"]["command"]
+    assert json.loads((folder / "export_info.json").read_text())["command"] == job["result"]["command"]
 
 
 def test_answers_requires_unlock_first(make_client, tmp_path):
@@ -228,6 +230,7 @@ def test_dictionary_job_all_applets(make_client, tmp_path):
     assert folder.name.startswith("data_dictionary_Lab_")
     assert (folder / "index.csv").exists() and (folder / "export_info.json").exists()
     assert "--all-applets" in job["result"]["command"]
+    assert json.loads((folder / "export_info.json").read_text())["command"] == job["result"]["command"]
 
 
 # -- participant counts ----------------------------------------------------------------------

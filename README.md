@@ -82,7 +82,10 @@ Each run writes a new folder `<output>/<applet>_<timestamp>/` containing:
   endings, with the admin's formula-injection protection applied. Subscale and total scores are
   added to the first row of each submission (`activity_score`, `subscale_name_<name>`, …).
 - **`export_info.json`**: the filters used (with exact UTC bounds), counts, the tool version, and
-  any submissions that could not be decrypted. It contains no passwords.
+  any submissions that could not be decrypted. It contains no passwords. Its `command` field is
+  the full `curious-download` command that repeats this export, the same one the wizard prints at
+  the end. It's recorded for wizard, scripted, and app runs alike. To rerun it unattended, add
+  `--no-input` and set `CURIOUS_PASSWORD` and `CURIOUS_APPLET_PASSWORD`.
 
 With `--media`, the folder also contains:
 
@@ -196,7 +199,8 @@ Each run writes a folder `<output>/data_dictionary_<applet or workspace>_<timest
 - **`index.csv`**: one row per file, with the number of items, how many of them changed, the first
   and last version, the status (`current` or `removed in <version>`), and notes such as
   `reviewer assessment`. Applets that couldn't be read are listed here with the reason.
-- **`export_info.json`**: the tool version, server, and the version count of each applet.
+- **`export_info.json`**: the tool version, server, the version count of each applet, and in
+  `command` the `curious-download --dictionary …` command that repeats this download.
 
 ### Rows and versions
 

@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import __version__
-from ..cli import _equivalent_command
+from ..cli import _equivalent_command, dictionary_command
 from ..client import ApiError, CuriousClient, Participant
 from ..crypto import AppletDecryptor
 from ..csvout import file_slug, write_csv
@@ -94,9 +94,22 @@ def run_answers(
         write_manifest(export_dir / "media_files.csv", media_outcomes)
 
     media_counts = Counter(outcome.status for outcome in media_outcomes)
+    command = _equivalent_command(
+        server,
+        email,
+        details["id"],
+        participants,
+        filters.from_utc,
+        filters.to_utc,
+        activity_labels,
+        output,
+        media,
+        journey,
+    )
     info = {
         "tool": f"curious-download {__version__}",
         "created": _created(),
+        "command": command,
         "server": server,
         "applet": {"id": details["id"], "name": applet_name, "version": details.get("version")},
         "filters": {
@@ -144,18 +157,7 @@ def run_answers(
         if media
         else None,
         "journey": {"rows": len(result.journey), "failed": len(result.journey_failures)} if journey else None,
-        "command": _equivalent_command(
-            server,
-            email,
-            details["id"],
-            participants,
-            filters.from_utc,
-            filters.to_utc,
-            activity_labels,
-            output,
-            media,
-            journey,
-        ),
+        "command": command,
     }
 
 
@@ -209,9 +211,11 @@ def run_dictionary(
     write_csv(folder / "index.csv", index_rows, INDEX_COLUMNS)
 
     files = sum(1 for index_row in index_rows if index_row.get("file"))
+    command = dictionary_command(server, email, rows, workspace, output)
     info = {
         "tool": f"curious-download {__version__}",
         "created": _created(),
+        "command": command,
         "server": server,
         "kind": "data dictionary",
         "workspace": (workspace.get("workspaceName") or workspace["ownerId"]) if workspace else None,
@@ -220,21 +224,13 @@ def run_dictionary(
     }
     (folder / "export_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False))
 
-    parts = ["curious-download", "--dictionary", "--server", server, "--email", email]
-    if workspace:
-        parts += ["--all-applets", "--workspace", workspace["ownerId"]]
-    else:
-        for row in rows:
-            parts += ["--applet", row["id"]]
-    parts += ["--output", str(output)]
-
     failed = sum(1 for applet in applet_info if applet.get("error"))
     return {
         "folder": str(folder),
         "files": files,
         "applets": len(rows),
         "failed": failed,
-        "command": " ".join(shlex.quote(part) for part in parts),
+        "command": command,
     }
 
 
