@@ -330,7 +330,7 @@ def describe_score_change(old: dict, new: dict) -> str:
 # -- formatting cells ------------------------------------------------------------
 
 
-def _text(value: Any, language: str = "en") -> str:
+def display_text(value: Any, language: str = "en") -> str:
     """A translatable field: the language asked for, else the first one available."""
     if isinstance(value, dict):
         if value.get(language):
@@ -621,17 +621,21 @@ def _score_entries(activity: dict) -> list[_Entry]:
 
 
 def _item_cells(entry: _Entry, activity: dict) -> dict[str, Any]:
-    item = entry.data
+    return item_cells(entry.data, activity, entry.position)
+
+
+def item_cells(item: dict, activity: dict, position: int = 0) -> dict[str, Any]:
+    """The dictionary cells of one item; `activity` gives the context for skip logic and skippability."""
     response_type = item.get("responseType") or ""
     values = item.get("responseValues") if isinstance(item.get("responseValues"), dict) else {}
     config = item.get("config") if isinstance(item.get("config"), dict) else {}
     ranged = response_type in ("slider", "numberSelect")
     return {
-        "item_order": entry.position,
+        "item_order": position,
         "item_id": item.get("id"),
         "item_name": item.get("name"),
         "item_type": response_type,
-        "item_prompt": _text(item.get("question")),
+        "item_prompt": display_text(item.get("question")),
         # Exactly what responses.csv shows for this item.
         "item_response_options": to_string(coalesce(parse_options(item.get("responseValues"), response_type), "")),
         "value_labels": _value_labels(response_type, values),
@@ -647,6 +651,18 @@ def _item_cells(entry: _Entry, activity: dict) -> dict[str, Any]:
         "hidden": "yes" if item.get("isHidden") else "no",
         "shown_if": describe_logic(item.get("conditionalLogic"), {i.get("name"): i for i in activity["items"]}),
     }
+
+
+def score_rows(activity: dict) -> list[dict[str, Any]]:
+    """The score rows a download writes for the activity as it is now."""
+    return [_score_cells(entry) for entry in _score_entries(activity)]
+
+
+def subscale_cells(name: str, scoring: str, items: list[str], table: list | None = None) -> dict[str, Any]:
+    """The row of one subscale, as a download writes it. Nested subscales in `items` end in ' (subscale)'."""
+    column = f"subscale_name_{clean_name(name)}"
+    data = {"column": column, "kind": "subscale_score", "name": name, "scoring": scoring, "items": items}
+    return _score_cells(_Entry(column, "", {**data, "table": table or []}))
 
 
 def _score_cells(entry: _Entry) -> dict[str, Any]:

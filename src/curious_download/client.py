@@ -197,6 +197,19 @@ class CuriousClient:
         """Applet details: encryption, activities and activityFlows (without items)."""
         return self._get(f"/applets/{applet_id}")["result"]
 
+    def applet_full(self, owner_id: str, applet_id: str) -> dict:
+        """The whole applet as the admin Builder loads it: every activity (assessment included) with items,
+        flows, encryption, and translations. Owner, manager, coordinator, editor, or reviewer."""
+        return self._get(f"/workspaces/{owner_id}/applets/{applet_id}")["result"]
+
+    def update_applet(self, applet_id: str, body: dict) -> dict:
+        """Replace the whole applet (PUT, as the admin Builder's Save does). Owner, manager, or editor.
+
+        Every activity, item, and flow is deleted and re-created from `body`, so anything left out
+        is removed. Each call creates a new applet version and notifies participants.
+        """
+        return self._request("PUT", f"/applets/{applet_id}", json=body)["result"]
+
     def applet_versions(self, applet_id: str) -> list[dict]:
         """Every saved version, newest first: [{version, createdAt, creator}]. Any applet role may call it."""
         return self._get(f"/applets/{applet_id}/versions")["result"]

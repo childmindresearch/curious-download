@@ -482,6 +482,32 @@ def download(
         bool, typer.Option("--all-applets", help="With --dictionary: every applet in the workspace.")
     ] = False,
     workspace: Annotated[str | None, typer.Option(help="Workspace name or owner ID.")] = None,
+    convert_redcap: Annotated[
+        Path | None,
+        typer.Option("--convert-redcap", help="Convert a REDCap data dictionary (CSV) into Curious data dictionaries."),
+    ] = None,
+    decisions: Annotated[
+        Path | None,
+        typer.Option(help="With --convert-redcap: the answers of an earlier conversion (redcap_decisions.json)."),
+    ] = None,
+    upload: Annotated[
+        Path | None,
+        typer.Option("--upload", help="Upload a data dictionary (CSV file or folder) into an existing applet."),
+    ] = None,
+    remove_missing: Annotated[
+        bool | None,
+        typer.Option(
+            "--remove-missing/--keep-missing",
+            help="With --upload: remove an activity's items that the dictionary doesn't list (default: keep).",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="With --upload or --restore and --no-input: save without asking.")
+    ] = False,
+    restore: Annotated[
+        Path | None,
+        typer.Option("--restore", help="Put an applet back as it was before an upload (its applet_before.json)."),
+    ] = None,
     participant: Annotated[
         list[str] | None, typer.Option("--participant", "-p", help="Participant secret ID (repeat for several).")
     ] = None,
@@ -517,7 +543,8 @@ def download(
     version: Annotated[bool, typer.Option("--version", help="Show the version and exit.")] = False,
 ) -> None:
     """Download and decrypt Curious answers into an admin-compatible responses.csv,
-    or (with --dictionary) download data dictionaries of applets.
+    download data dictionaries of applets (--dictionary), convert REDCap data
+    dictionaries (--convert-redcap), or upload a data dictionary into an applet (--upload).
 
     Run it without options for a step-by-step wizard. Every answer can also be
     given as an option, so the same download can be scripted and re-run.
@@ -548,24 +575,66 @@ def download(
     settings = _load_settings()
 
     try:
-        if not dictionary and interactive and not answer_options and not all_applets:
-            dictionary = _ask(
+        modes = [
+            (mode, flag)
+            for mode, given, flag in (
+                ("dictionary", dictionary, "--dictionary"),
+                ("convert", convert_redcap, "--convert-redcap"),
+                ("upload", upload, "--upload"),
+                ("restore", restore, "--restore"),
+            )
+            if given
+        ]
+        if len(modes) > 1:
+            raise UsageError(f"Use one of {', '.join(flag for _, flag in modes)} at a time.")
+        mode = modes[0][0] if modes else "answers"
+        if not modes and interactive and not answer_options and not all_applets:
+            mode = _ask(
                 questionary.select(
-                    "What would you like to download?",
+                    "What would you like to do?",
                     choices=[
-                        questionary.Choice("Answers (responses.csv)", False),
+                        questionary.Choice("Download answers (responses.csv)", "answers"),
                         questionary.Choice(
-                            "Data dictionary (the items of each activity, across applet versions)", True
+                            "Download data dictionaries (the items of each activity, across applet versions)",
+                            "dictionary",
                         ),
+                        questionary.Choice("Convert a REDCap data dictionary for Curious", "convert"),
+                        questionary.Choice("Upload a data dictionary into an applet", "upload"),
                     ],
                 )
             )
-        if dictionary and answer_options:
-            raise UsageError(f"{', '.join(answer_options)} only apply to answer downloads, not --dictionary.")
-        if not dictionary and all_applets:
+        flag = dict(modes).get(mode) or f"--{mode}"
+        if mode != "answers" and answer_options:
+            raise UsageError(f"{', '.join(answer_options)} only apply to answer downloads, not {flag}.")
+        if mode != "dictionary" and all_applets:
             raise UsageError("--all-applets only applies to --dictionary.")
-        if not dictionary and applet and len(applet) > 1:
-            raise UsageError("Answers are downloaded one applet at a time; pass a single --applet.")
+        if mode != "dictionary" and applet and len(applet) > 1:
+            what = "Answers are downloaded from" if mode == "answers" else "Uploads go into"
+            raise UsageError(f"{what} one applet at a time; pass a single --applet.")
+        if decisions and mode != "convert":
+            raise UsageError("--decisions only applies to --convert-redcap.")
+        if (remove_missing is not None or yes) and mode not in ("upload", "restore", "convert"):
+            raise UsageError("--yes and --remove-missing only apply to --upload and --restore.")
+
+        if mode == "convert":
+            from .upload_cli import run_convert
+
+            folder = run_convert(convert_redcap, decisions, output, interactive)
+            if not interactive or not _ask(
+                questionary.confirm("Upload the converted dictionary into an applet now?", default=False)
+            ):
+                return
+            mode, upload = "upload", folder
+
+        # Read the files first, so problems with them show up before the login questions.
+        if mode == "upload":
+            from .upload_cli import load_upload
+
+            upload, upload_rows = load_upload(upload, interactive)
+        elif mode == "restore":
+            from .upload_cli import load_backup
+
+            backup = load_backup(restore)
 
         if not server:
             if not interactive:
@@ -587,8 +656,29 @@ def download(
             _save_settings(server=server, email=email)
             console.print(f"[green]Logged in[/green] as {email}")
 
-            if dictionary:
+            if mode == "dictionary":
                 _download_dictionaries(client, server, email, applet or [], all_applets, workspace, output, interactive)
+                return
+            if mode in ("upload", "restore"):
+                from .upload_cli import run_restore, run_upload
+
+                if mode == "upload":
+                    first = applet[0] if applet else None
+                    run_upload(
+                        client,
+                        server,
+                        email,
+                        upload,
+                        upload_rows,
+                        first,
+                        workspace,
+                        output,
+                        interactive,
+                        yes,
+                        remove_missing,
+                    )
+                else:
+                    run_restore(client, backup, output, interactive, yes)
                 return
 
             details, owner_id = _resolve_applet(client, applet[0] if applet else None, workspace, interactive)

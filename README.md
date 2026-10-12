@@ -6,7 +6,9 @@ the admin panel's **Export data** (renamed-column version), so the existing
 `mindlogger-data-export` post-processing tool and transformation scripts can read it.
 
 The same command also downloads [data dictionaries](#data-dictionaries): one CSV per activity
-describing its items across every version of the applet.
+describing its items across every version of the applet. It can [convert REDCap data
+dictionaries](#converting-a-redcap-data-dictionary) into that format, and [upload a data
+dictionary](#uploading-a-data-dictionary-into-an-applet) into an existing applet.
 
 Prefer point-and-click? [`curious-app`](#the-app-curious-app) runs the same downloads
 (answers, data dictionaries, and participant counts) from a page in your browser.
@@ -22,8 +24,11 @@ pip install -e /path/to/curious-data-download
 or with uv:
 
 ```bash
-uv tool install /path/to/curious-data-download
+uv tool install --editable /path/to/curious-data-download
 ```
+
+Install with `-e` / `--editable` so the command always runs the current code. A plain install
+copies the code once and keeps running that copy after the folder is updated.
 
 ## Use
 
@@ -35,7 +40,8 @@ Run it with no options and answer the questions:
 curious-download
 ```
 
-It first asks whether you want answers or a data dictionary. For answers, it then asks for the API
+It first asks what you want to do: download answers, download data dictionaries, convert a REDCap
+data dictionary, or upload a data dictionary into an applet. For answers, it then asks for the API
 address, your email and password (plus a 6-digit code if your account uses MFA), then the applet
 and its applet password. Then you choose participants, a date range, and
 activities. At the end it prints the equivalent command, so you can repeat the same download
@@ -260,6 +266,193 @@ Notes:
   in snake_case (`min_value`) rather than the camelCase (`minValue`) used elsewhere in the API, so the
   tool accepts both.
 
+## Converting a REDCap data dictionary
+
+```bash
+curious-download --convert-redcap "Cohort 4 Academy(Pre).csv"
+```
+
+This works offline: nothing is sent anywhere. The result is one data dictionary CSV per REDCap form,
+in the same format as a downloaded dictionary, so you can check and edit it before
+[uploading](#uploading-a-data-dictionary-into-an-applet). At the end the wizard offers to upload it
+straight away.
+
+Wherever the two platforms differ, it asks what to do. It only asks about what your file actually
+contains, and the first answer offered is the recommended one:
+
+| Situation in REDCap | Choices |
+|---|---|
+| Several forms | Which forms to convert (all of them by default). Staff-only forms can be left out |
+| Rows with a label but no variable name (often a long label split over two rows) | Add the text to the label above, or leave them out |
+| Matrix groups | One item per field (keeps every variable name and coded value), or one Curious grid per group, or decide per group |
+| Section headers | A separate message screen before the field, added to the field's prompt (every field of a matrix group), or left out |
+| Branching logic Curious can't express exactly | Keep the conditions Curious can express, show the field always, leave the field out, or decide per field. See below |
+| Hidden fields (`@HIDDEN`, `@HIDDEN-SURVEY`) | Leave them out (nobody can fill in a hidden Curious item), or keep them hidden |
+| Read-only fields (`@READONLY`), often feedback such as "Incorrect, review the video" | A message screen with the label (and the `@DEFAULT` value), an ordinary question, or left out |
+| Sliders (REDCap 0–100, Curious at most 0–12) | A number picker with the same range, a 0–10 slider (different scale), or a number text box. Sliders whose range fits are converted directly |
+| Whole-number fields with a small range | A number picker for the range, or a number text box |
+| Date-time fields | A date item, or text |
+| Notes boxes | Paragraph text, or text |
+| File and signature fields | Photo, video, audio, drawing, or left out |
+| Choice codes that aren't whole numbers | Renumber from 0 or from 1 (the report lists the new codes), or leave the field out |
+| Calculated fields that add up, average, or count answers | Make them Curious subscales (see below), or leave them out |
+| Options have no scores | No scores, or score each option with its code (items used by a subscale are always scored) |
+| Form names | The Curious activity name (default: `student_pre_assessment` → `Student Pre Assessment`) |
+
+It also converts automatically:
+- **Field types:** radio, dropdown, yes/no, and true/false become single choice; checkboxes become
+  multiple choice; descriptive fields become message screens.
+- **Validation and requirements:** number validation becomes "numbers only", dates and times
+  become date and time items, and required fields become non-skippable.
+- **Text:** HTML labels become Markdown, including headings, lists, and tables. Piping like `[age]`
+  becomes Curious's `[[age]]`, and field notes are added to the prompt.
+- **Annotations:** `@NONEOFTHEABOVE`, `@HIDECHOICE`, `@SHOWCHOICE`, `@RANDOMORDER`, and `@CHARLIMIT`
+  are converted.
+- **Choices without a label:** a lone checkbox with no label (a REDCap "I agree" box) gets the
+  label "Yes".
+
+Things Curious can't do are reported, not silently dropped:
+- Other calculated fields (`calc` with dates, conditions, or thresholds on other scores, and
+  `@CALCTEXT`) are left out.
+- Conditional annotations (`@IF(…)`) are ignored as a whole, so their choices are all shown.
+- Tags that fill in values, such as `@DEFAULT` and `@NOW`, have no effect.
+- Videos and files attached to descriptive fields aren't in the data dictionary. Each screen that
+  mentions a video is listed, so you can add it in the admin panel.
+- Also reported: matrix ranking, "check all that apply" on a single-choice field, and validation
+  types such as email.
+
+**Branching logic.** Curious combines an item's conditions with either AND or OR, and conditions can
+only refer to earlier items in the same activity. When REDCap's logic is a plain list of conditions,
+it converts exactly; a comparison like `[q1] > 2` on a single-choice field becomes
+`q1 = 3 OR q1 = 4 …`. When it can't be converted exactly, the recommended choice keeps the
+conditions Curious can express, so the field never stays hidden when REDCap would show it. For
+example:
+
+- `([attendance(1)] = '1' or [attendance(2)] = '1') and [intervention] = '6' and [session] = '1'`
+  becomes `intervention = … AND session = …`. The attendance condition can't be combined with the
+  others, so it is dropped.
+- `([a] = '4' or [a] = '5') and ([b] = '1' or [b] = '2')` keeps one of the two groups,
+  `a = 4 OR a = 5`.
+- `datediff([dob], 'today', 'y') >= 18 and [consent] = '1'` keeps `consent = 1`.
+
+The field may then show in more cases than in REDCap. Each simplified field is listed in the report
+with the original logic, so you can edit its `shown_if` by hand. Fields whose logic Curious can't
+express at all are shown always. Examples are logic that counts answers with `if()`, or that depends
+on a field in another form or a calculated field.
+
+Each run writes `<output>/redcap_<file>_<timestamp>/` with:
+
+- **`<file>__<activity>__data_dictionary.csv`**: one per form.
+- **`conversion_report.csv`**: every decision and every mismatch, field by field.
+- **`redcap_decisions.json`**: your answers. Pass it with `--decisions` to convert again, or to
+  convert a similar file (for example the Post survey), without the questions.
+- **`export_info.json`**: the source, item counts, and decisions.
+
+```bash
+curious-download --convert-redcap "Cohort 4 Academy(Post).csv" \
+  --decisions curious_exports/redcap_Cohort_4_Academy_Pre_<timestamp>/redcap_decisions.json --no-input
+```
+
+**Calculated fields.** Three kinds of REDCap calculation become Curious subscales, named after the
+REDCap field. The subscale's column in responses.csv is `subscale_name_<field>`.
+
+- **Sums:** `[gad7_1] + [gad7_2] + …` or `sum([a], [b])`. The items are scored with their REDCap codes,
+  so Curious adds up the same values.
+- **Averages:** `mean([a], [b])` or `([a] + [b] + [c]) / 3`.
+- **Counts:** `if([asrs6_1] >= 2, 1, 0) + if([asrs6_2] >= 3, 1, 0) + …`. Each item is scored 1 or 0 by
+  its threshold.
+
+A calculation may use another converted calculation, which becomes a nested subscale. An item has
+one set of scores, so a calculation that would score an item differently than another subscale
+already does is left out and reported. Rounding is not kept (Curious shows 2 decimals).
+
+Unanswered items differ between the two platforms:
+- **REDCap:** `[a] + [b]` gives no result when an item is unanswered, and `mean()` averages only the
+  answered items.
+- **Curious:** unanswered items count as 0.
+
+Before writing the files, the converter checks the result the way an upload will. If anything would
+be refused, it is listed as a warning in the report.
+
+## Uploading a data dictionary into an applet
+
+```bash
+curious-download --upload <file.csv or folder> --applet "EMA Study"
+```
+
+The applet must already exist (create it in the admin panel), and you need an owner, manager, or
+editor role on it. No applet password is needed. The file is a data dictionary: one you downloaded
+with `--dictionary` and edited, or one the REDCap converter wrote. A folder uploads every dictionary
+CSV in it.
+
+For each activity in the file:
+
+- **If the applet has an activity with that name** (or `activity_id`), its items are updated:
+  - Items are matched by `item_id` or `item_name`. Only the cells you changed are applied. Settings
+    the dictionary doesn't show (images, colours, alerts, other languages) are kept.
+  - New rows become new items.
+  - Items in the applet but not in the file are listed. You choose whether to keep them (in their
+    place) or remove them. With `--no-input` they are kept unless you pass `--remove-missing`.
+- **Otherwise a new activity is created.**
+- **Activities not in the file are left as they are.** The upload never removes an activity,
+  because that would delete its schedule.
+
+Which cells are read: `item_name`, `item_type`, `item_prompt`, `value_labels`, `scores`,
+`min_value`/`max_value`, `min_label`/`max_label`, `rows`, `response_rules`, `other_text_option`,
+`skippable`, `hidden`, and `shown_if`. They are written the same way as in a downloaded dictionary.
+`item_response_options` is ignored; edit `value_labels` and `scores` instead. History rows (status
+`changed in …` or `removed in …`) are skipped. `shown_if` uses `AND` or `OR` (capitals; one of them
+per item) and can only refer to earlier items, e.g. `mood = "Often" (1) AND sleep > 6`.
+
+**Subscales and the total score** are read from the score rows, written as a download writes them:
+
+| item_name | item_type | item_prompt | value_labels |
+|---|---|---|---|
+| `subscale_name_Anxiety` | `subscale_score` | `Subscale Anxiety: Sum of q1, q2, q3` | `raw 0~4 -> 50 (sex F, age 8~12, Mild): Typical \| raw 5~9 -> 60` |
+| `subscale_name_Total` | `subscale_score` | `Subscale Total: Average of Anxiety (subscale), q4` | |
+| `activity_score` | `total_score` | `Total score: Sum of …` (the items are worked out by Curious) | `raw 0~10: Low` |
+
+- `Sum of`, `Average of`, and `Sum of … as a percentage of its maximum` are the three scorings.
+- `value_labels` holds the optional lookup table.
+- A subscale that uses another subscale lists it with ` (subscale)`.
+- Lookup-text rows (`…_lookup_text_…`) are written by downloads for information and ignored on upload.
+
+How score rows are applied:
+- **Unchanged rows:** a subscale whose row is unchanged is kept exactly as it is.
+- **Subscales not in the file:** treated like missing items, so they are kept unless you remove them.
+- **No score rows at all:** the activity's subscales are left alone.
+- **Scoring needed:** the items a subscale uses must be choice or slider items with scores.
+
+Before anything is sent:
+
+1. The tool checks everything the backend would refuse, and stops with a list of problems if there
+   are any. Examples: skip logic that refers to a later item, a slider beyond 0–12, a missing score,
+   or an item still used by a subscale or report.
+2. It shows what will change and asks for confirmation. With `--no-input` it is a dry run unless
+   you add `--yes`.
+3. Just before saving, it checks the applet hasn't changed on the server since it was read (someone
+   saving in the admin panel at the same time). If it has, nothing is saved.
+
+Saving replaces the whole applet, as the admin panel does, so everything the file doesn't cover is
+sent back exactly as it was: other activities, flows, encryption, theme, and report settings. Each
+upload creates a new applet version and sends participants an "Applet is updated" notification.
+Re-uploading a dictionary you didn't change does nothing.
+
+Each run writes `<output>/upload_<applet>_<timestamp>/` with:
+- `upload_plan.csv`: every item, with the action and what changed.
+- `upload_problems.csv`
+- `applet_before.json`: the applet as it was.
+- `applet_after.json`
+- `upload_body.json`: exactly what was sent.
+- `export_info.json`
+
+To undo an upload, put the applet back as it was. Restoring removes activities the upload created;
+activities it removed come back, but without their old schedule:
+
+```bash
+curious-download --restore curious_exports/upload_EMA_Study_<timestamp>/applet_before.json
+```
+
 ## Participant counts per applet
 
 `curious-participant-counts` is installed with the same package. It goes through every applet in a
@@ -338,3 +531,18 @@ Node.js is needed for two kinds of test:
 paging, filters, and the files written. `tests/test_webapp.py` runs the web app's API against the
 same fake servers: login and MFA, applet unlocking, all three downloads end to end, and the
 app-token check.
+
+The upload tests (`tests/test_upload.py`) use a fake server that saves applets the way the backend
+does: everything is replaced and new IDs are given out. The applet they edit (`tests/full_applet.py`)
+has the shape the admin Builder loads, with every item type and condition type.
+
+`tests/test_backend_schema.py` goes further: it validates upload bodies with the backend's own
+request model (`AppletUpdate`, from the local `mindlogger-backend-refactor-develop`). That covers
+item settings, skip logic, scores, and subscales. It runs when `CURIOUS_BACKEND_PYTHON` points to a
+Python that has the backend's packages, and is skipped otherwise:
+
+```bash
+python -m venv /tmp/backend-venv
+/tmp/backend-venv/bin/pip install "pydantic[email]" pydantic-extra-types "nh3==0.3.*" requests starlette fastapi pydantic-settings
+CURIOUS_BACKEND_PYTHON=/tmp/backend-venv/bin/python .venv/bin/pytest tests/test_backend_schema.py
+```
