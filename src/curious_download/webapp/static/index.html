@@ -162,7 +162,7 @@
       <!-- ============ data dictionary ============ -->
       <section id="tab-dictionary" class="card task" hidden>
         <p class="task-help">One CSV per activity describing its items (prompts, response options, scores,
-          skip logic) across every saved version of the applet. No applet password is needed.</p>
+          skip logic), for every saved version of the applet or only the current one. No applet password is needed.</p>
 
         <div class="field-grid">
           <label>Workspace
@@ -172,6 +172,12 @@
             <select id="dict-mode">
               <option value="all">All applets in this workspace</option>
               <option value="some">Choose applets…</option>
+            </select>
+          </label>
+          <label>Versions
+            <select id="dict-versions">
+              <option value="all">All saved versions (shows how each item changed)</option>
+              <option value="current">Only the current version</option>
             </select>
           </label>
         </div>
@@ -189,8 +195,9 @@
 
         <div id="dict-error" class="error" hidden></div>
         <button id="dict-run" class="primary run" type="button">Download data dictionaries</button>
-        <p class="fineprint">An often-edited applet can have hundreds of saved versions (one request each),
-          so this can take a minute or two per applet.</p>
+        <p class="fineprint">With all versions, an often-edited applet can have hundreds of saved versions
+          (one request each), so this can take a minute or two per applet. The current version alone is one
+          request per applet.</p>
       </section>
 
       <!-- ============ participant counts ============ -->

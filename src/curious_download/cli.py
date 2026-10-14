@@ -331,7 +331,9 @@ def _equivalent_command(
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def dictionary_command(server: str, email: str, rows: list[dict], whole_workspace: dict | None, output) -> str:
+def dictionary_command(
+    server: str, email: str, rows: list[dict], whole_workspace: dict | None, output, current_only: bool = False
+) -> str:
     """The data dictionary command that repeats a download without the questions."""
     parts = ["curious-download", "--dictionary", "--server", server, "--email", email]
     if whole_workspace:
@@ -339,7 +341,7 @@ def dictionary_command(server: str, email: str, rows: list[dict], whole_workspac
     else:
         for row in rows:
             parts += ["--applet", row["id"]]
-    parts += ["--output", str(output)]
+    parts += ["--current-only" if current_only else "--all-versions", "--output", str(output)]
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -394,9 +396,20 @@ def _download_dictionaries(
     workspace: str | None,
     output: Path,
     interactive: bool,
+    current_only: bool | None = None,
 ) -> None:
     """Write one data dictionary CSV per activity of each chosen applet, plus index.csv."""
     rows, scope, whole_workspace = _choose_dictionary_applets(client, applets, all_applets, workspace, interactive)
+    if current_only is None:
+        current_only = interactive and _ask(
+            questionary.select(
+                "Which versions?",
+                choices=[
+                    questionary.Choice("All saved versions (shows how each item changed over time)", False),
+                    questionary.Choice("Only the current version (faster: one request per applet)", True),
+                ],
+            )
+        )
     folder = output / f"data_dictionary_{file_slug(scope)}_{datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -413,6 +426,7 @@ def _download_dictionaries(
                     row["id"],
                     name,
                     on_progress=lambda done, total, task=task: progress.update(task, completed=done, total=total),
+                    current_only=current_only,
                 )
             except ApiError as e:
                 note = "no access to this applet" if e.status_code == 403 else f"error: {e}"
@@ -435,13 +449,14 @@ def _download_dictionaries(
     write_csv(folder / "index.csv", index_rows, INDEX_COLUMNS)
 
     files = sum(1 for index_row in index_rows if index_row.get("file"))
-    command = dictionary_command(server, email, rows, whole_workspace, output)
+    command = dictionary_command(server, email, rows, whole_workspace, output, current_only)
     info = {
         "tool": f"curious-download {__version__}",
         "created": datetime.now().astimezone().isoformat(timespec="seconds"),
         "command": command,
         "server": server,
         "kind": "data dictionary",
+        "versions": "current" if current_only else "all",
         "workspace": (whole_workspace.get("workspaceName") or whole_workspace["ownerId"]) if whole_workspace else None,
         "applets": applet_info,
         "files": files,
@@ -475,13 +490,21 @@ def download(
     dictionary: Annotated[
         bool,
         typer.Option(
-            "--dictionary", help="Download data dictionaries (the items of every activity, across all applet versions)."
+            "--dictionary",
+            help="Download data dictionaries: the items of every activity, for every saved version or the current one.",
         ),
     ] = False,
     all_applets: Annotated[
         bool, typer.Option("--all-applets", help="With --dictionary: every applet in the workspace.")
     ] = False,
     workspace: Annotated[str | None, typer.Option(help="Workspace name or owner ID.")] = None,
+    current_only: Annotated[
+        bool | None,
+        typer.Option(
+            "--current-only/--all-versions",
+            help="With --dictionary: only the applet's current version, or every saved version (the default).",
+        ),
+    ] = None,
     convert_redcap: Annotated[
         Path | None,
         typer.Option("--convert-redcap", help="Convert a REDCap data dictionary (CSV) into Curious data dictionaries."),
@@ -595,7 +618,7 @@ def download(
                     choices=[
                         questionary.Choice("Download answers (responses.csv)", "answers"),
                         questionary.Choice(
-                            "Download data dictionaries (the items of each activity, across applet versions)",
+                            "Download data dictionaries (the items of each activity)",
                             "dictionary",
                         ),
                         questionary.Choice("Convert a REDCap data dictionary for Curious", "convert"),
@@ -608,6 +631,8 @@ def download(
             raise UsageError(f"{', '.join(answer_options)} only apply to answer downloads, not {flag}.")
         if mode != "dictionary" and all_applets:
             raise UsageError("--all-applets only applies to --dictionary.")
+        if mode != "dictionary" and current_only is not None:
+            raise UsageError("--current-only and --all-versions only apply to --dictionary.")
         if mode != "dictionary" and applet and len(applet) > 1:
             what = "Answers are downloaded from" if mode == "answers" else "Uploads go into"
             raise UsageError(f"{what} one applet at a time; pass a single --applet.")
@@ -657,7 +682,9 @@ def download(
             console.print(f"[green]Logged in[/green] as {email}")
 
             if mode == "dictionary":
-                _download_dictionaries(client, server, email, applet or [], all_applets, workspace, output, interactive)
+                _download_dictionaries(
+                    client, server, email, applet or [], all_applets, workspace, output, interactive, current_only
+                )
                 return
             if mode in ("upload", "restore"):
                 from .upload_cli import run_restore, run_upload

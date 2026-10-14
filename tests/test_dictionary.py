@@ -410,7 +410,7 @@ def test_answer_mode_rejects_dictionary_options(monkeypatch, tmp_path):
 
 def test_wizard_choose_applets(monkeypatch, tmp_path):
     server = FakeServer()
-    answers = iter(["Choose applets…", [server.applets[0]]])
+    answers = iter(["Choose applets…", [server.applets[0]], True])  # True: only the current version
     monkeypatch.setattr(cli, "_ask", lambda question: next(answers))
     printed = io.StringIO()
     monkeypatch.setattr(cli, "console", cli.Console(file=printed, width=300))
@@ -419,7 +419,44 @@ def test_wizard_choose_applets(monkeypatch, tmp_path):
         cli._download_dictionaries(client, SERVER, EMAIL, [], False, None, tmp_path, interactive=True)
     folder = next(tmp_path.glob("data_dictionary_EMA_Study_*"))
     assert (folder / "EMA_Study__Daily__data_dictionary.csv").is_file()
-    assert f"curious-download --dictionary --server {SERVER} --email {EMAIL} --applet {EMA}" in printed.getvalue()
+    expected = f"curious-download --dictionary --server {SERVER} --email {EMAIL} --applet {EMA} --current-only"
+    assert expected in printed.getvalue()
+
+
+def test_current_version_only(run):
+    server = FakeServer()
+    result, folder = run(server, "--applet", "EMA Study", "--current-only")
+    assert result.exit_code == 0, result.output
+    # Activities removed before the current version have no file.
+    assert sorted(p.name for p in folder.glob("*.csv")) == [
+        "EMA_Study__Daily__data_dictionary.csv",
+        "EMA_Study__Weekly__data_dictionary.csv",
+        "index.csv",
+    ]
+    rows = _read(folder / "EMA_Study__Daily__data_dictionary.csv")
+    assert [r["item_name"] for r in rows] == ["mood", "energy", "notes"]
+    assert {(r["first_version"], r["last_version"], r["applet_versions"], r["status"], r["change"]) for r in rows} == {
+        ("2.0.0", "2.0.0", "2.0.0", "current", "")
+    }
+    assert rows[0]["value_labels"] == "0=never | 1=often | 2=always"
+    assert rows[2]["shown_if"] == 'mood = "often" (1)'
+
+    paths = [r.url.path for r in server.requests]
+    assert [p for p in paths if p.startswith(f"/applets/{EMA}/versions/")] == [f"/applets/{EMA}/versions/2.0.0"]
+    info = json.loads((folder / "export_info.json").read_text())
+    assert info["versions"] == "current" and info["applets"][0]["versions"] == 1
+    assert info["command"].endswith(f"--current-only --output {folder.parent}")
+
+    result, folder = run(FakeServer(), "--applet", "EMA Study", "--all-versions")
+    assert json.loads((folder / "export_info.json").read_text())["versions"] == "all"
+
+
+def test_version_options_need_dictionary_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "SETTINGS_PATH", tmp_path / "settings.json")
+    app = typer.Typer()
+    app.command()(cli.download)
+    result = CliRunner().invoke(app, ["--server", SERVER, "--email", EMAIL, "--no-input", "--current-only"])
+    assert result.exit_code == 2 and "only apply to --dictionary" in result.output
 
 
 # -- units -----------------------------------------------------------------------------------------

@@ -138,11 +138,15 @@ def fetch_history(
     applet_id: str,
     applet_name: str,
     on_progress: Callable[[int, int], None] | None = None,
+    *,
+    current_only: bool = False,
 ) -> AppletHistory:
-    """Download every saved version of an applet (one request per version)."""
+    """Download every saved version of an applet (one request per version), or only the current one."""
     listed = client.applet_versions(applet_id)[::-1]  # the API lists newest first
     listed.sort(key=lambda row: row.get("createdAt") or "")
     names = [row["version"] for row in listed]
+    if current_only:
+        names = names[-1:]
     snapshots = []
     for done, name in enumerate(names, start=1):
         snapshots.append(normalize_version(client.applet_version(applet_id, name)))

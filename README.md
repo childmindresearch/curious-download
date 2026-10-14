@@ -158,7 +158,7 @@ then pick a task:
 
 - **Download answers** — choose a workspace, an applet (unlocked with its applet password),
   participants, a date range, activities, and optionally media files and the participant journey.
-- **Data dictionary** — choose a workspace and all or some of its applets.
+- **Data dictionary** — choose a workspace, all or some of its applets, and all saved versions or only the current one.
 - **Participant counts** — choose a workspace and a date range; the table is shown in the page
   and saved as a CSV.
 
@@ -181,26 +181,35 @@ Notes:
 ## Data dictionaries
 
 A data dictionary describes the items (questions) of each activity: prompt, type, response
-options, scores, skip logic, and more. Every saved version of the applet is included, so changes
-to a question over the course of a study are visible.
+options, scores, skip logic, and more. You can download either of two kinds:
 
-In the wizard, choose **Data dictionary** at the first question, then pick a workspace and either
-all of its applets or some of them. In scripts:
+- **All saved versions** (`--all-versions`, the default in scripts) shows how each question changed
+  over the course of a study. It needs one request per saved version.
+- **Only the current version** (`--current-only`) is one request per applet. Every row is the item
+  as it is now.
+
+In the wizard, choose **Data dictionary** at the first question. Then pick a workspace, either all of
+its applets or some of them, and which versions. In scripts:
 
 ```bash
 curious-download --dictionary --no-input --server https://<curious-api-address> \
   --email you@example.org --applet "EMA Study" --applet "Sleep Study"
 curious-download --dictionary --no-input --server https://<curious-api-address> \
-  --email you@example.org --all-applets --workspace "My Lab"
+  --email you@example.org --all-applets --workspace "My Lab" --current-only
 ```
+
+Both kinds use the same columns. With `--current-only`, `first_version`, `last_version`, and
+`applet_versions` all give the current version, `status` is `current`, and `change` is empty. Only
+activities that still exist are included. `export_info.json` records which kind you chose
+(`"versions": "all"` or `"current"`).
 
 No applet password is needed, because nothing is decrypted and no answers are downloaded. Any
 role on an applet works, including editor and coordinator.
 
 Each run writes a folder `<output>/data_dictionary_<applet or workspace>_<timestamp>/` containing:
 
-- **`<applet>__<activity>__data_dictionary.csv`**: one file per activity. Activities deleted in a
-  later version are included, because answers to them stay on the server. If two activities would
+- **`<applet>__<activity>__data_dictionary.csv`**: one file per activity. With all versions,
+  activities deleted in a later version are included, because answers to them stay on the server. If two activities would
   get the same file name, their IDs are added to it.
 - **`index.csv`**: one row per file, with the number of items, how many of them changed, the first
   and last version, the status (`current` or `removed in <version>`), and notes such as

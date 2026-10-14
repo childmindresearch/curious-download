@@ -384,6 +384,7 @@ $("dict-run").onclick = async () => {
     ownerId,
     allApplets,
     appletIds,
+    currentOnly: $("dict-versions").value === "current",
     outputDir: $("dict-output").value,
   });
 };

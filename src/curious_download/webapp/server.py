@@ -95,6 +95,7 @@ class DictionaryJobBody(BaseModel):
     ownerId: str
     appletIds: list[str] = Field(default_factory=list)
     allApplets: bool = False
+    currentOnly: bool = False
     outputDir: str
 
 
@@ -363,12 +364,23 @@ def create_app(
             raise HTTPException(400, "Select at least one applet.")
         output = output_dir(body.outputDir)
         client, server, email = current.client, current.server, current.email
-        title = f"Data dictionary — {scope}" + (f" ({len(rows)} applets)" if len(rows) > 1 else "")
+        details = ([f"{len(rows)} applets"] if len(rows) > 1 else []) + (
+            ["current version"] if body.currentOnly else []
+        )
+        title = f"Data dictionary — {scope}" + (f" ({', '.join(details)})" if details else "")
         job = state.jobs.start(
             "dictionary",
             title,
             lambda job: runners.run_dictionary(
-                job, client, server=server, email=email, rows=rows, scope=scope, workspace=whole, output=output
+                job,
+                client,
+                server=server,
+                email=email,
+                rows=rows,
+                scope=scope,
+                workspace=whole,
+                output=output,
+                current_only=body.currentOnly,
             ),
         )
         return {"jobId": job.id}

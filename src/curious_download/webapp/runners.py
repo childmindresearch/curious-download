@@ -171,6 +171,7 @@ def run_dictionary(
     scope: str,
     workspace: dict | None,
     output: Path,
+    current_only: bool = False,
 ) -> dict:
     """`workspace` is set when every applet of that workspace was chosen (mirrors --all-applets)."""
     folder = output / f"data_dictionary_{file_slug(scope)}_{_timestamp()}"
@@ -182,13 +183,15 @@ def run_dictionary(
     for number, row in enumerate(rows, start=1):
         name = row.get("displayName") or row["id"]
         counter = f" ({number} of {len(rows)})" if len(rows) > 1 else ""
-        job.progress(stage=f"Reading versions of {name}{counter}")
+        what = "the current version" if current_only else "versions"
+        job.progress(stage=f"Reading {what} of {name}{counter}")
         try:
             history = fetch_history(
                 client,
                 row["id"],
                 name,
                 on_progress=lambda done, total: job.progress(done=done, total=total),
+                current_only=current_only,
             )
         except ApiError as e:
             note = "no access to this applet" if e.status_code == 403 else f"error: {e}"
@@ -211,13 +214,14 @@ def run_dictionary(
     write_csv(folder / "index.csv", index_rows, INDEX_COLUMNS)
 
     files = sum(1 for index_row in index_rows if index_row.get("file"))
-    command = dictionary_command(server, email, rows, workspace, output)
+    command = dictionary_command(server, email, rows, workspace, output, current_only)
     info = {
         "tool": f"curious-download {__version__}",
         "created": _created(),
         "command": command,
         "server": server,
         "kind": "data dictionary",
+        "versions": "current" if current_only else "all",
         "workspace": (workspace.get("workspaceName") or workspace["ownerId"]) if workspace else None,
         "applets": applet_info,
         "files": files,

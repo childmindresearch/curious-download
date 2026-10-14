@@ -17,6 +17,7 @@ from curious_download.client import CuriousClient
 from curious_download.webapp.server import create_app
 
 from . import corpus, fake_server
+from .test_dictionary import EMA as EMA_APPLET
 from .test_dictionary import FakeServer as DictionaryFake
 from .test_participant_counts import OWNER_ID
 from .test_participant_counts import FakeServer as CountsFake
@@ -231,6 +232,30 @@ def test_dictionary_job_all_applets(make_client, tmp_path):
     assert (folder / "index.csv").exists() and (folder / "export_info.json").exists()
     assert "--all-applets" in job["result"]["command"]
     assert json.loads((folder / "export_info.json").read_text())["command"] == job["result"]["command"]
+
+
+def test_dictionary_job_current_version_only(make_client, tmp_path):
+    fake = DictionaryFake()
+    client = make_client(fake)
+    login(client, email="any@example.org", password="x")
+    workspaces = client.get("/api/workspaces").json()
+    started = client.post(
+        "/api/jobs/dictionary",
+        json={
+            "ownerId": workspaces[0]["ownerId"],
+            "appletIds": [EMA_APPLET],
+            "currentOnly": True,
+            "outputDir": str(tmp_path / "out"),
+        },
+    )
+    assert started.status_code == 200, started.text
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    assert "(current version)" in job["title"] and "--current-only" in job["result"]["command"]
+    folder = Path(job["result"]["folder"])
+    assert json.loads((folder / "export_info.json").read_text())["versions"] == "current"
+    version_reads = [r.url.path for r in fake.requests if r.url.path.startswith(f"/applets/{EMA_APPLET}/versions/")]
+    assert len(version_reads) == 1
 
 
 # -- participant counts ----------------------------------------------------------------------
