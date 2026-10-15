@@ -253,11 +253,15 @@ ask for them; their data is still on the server.
 
 ### Choosing what to show
 
-Above the grid, **Activities** and **Participants** each offer *All* or *Choose…* with a tickable
-list, and **only participants with data** hides everyone who has not completed anything in the
-loaded data. The three choices are saved on the study, so they are still in place the next time
-you open it; *All* clears a choice. The study editor has the same **Activities to show** list, so an
-applet with staff-only or retired activities can be narrowed before the first load.
+Above the grid, **Participants** opens a picker: a table of everyone loaded with nickname, tag,
+applets, submission count, adherence, and last completion, which you can search, filter by data,
+tag, or applet, sort, and tick or untick in bulk. **Activities** offers *All* or *Choose…* with a
+tickable list, **only participants with data** hides everyone who has not completed anything, and
+**hide empty columns** (on by default) drops every column where nothing was scheduled or done for
+anyone, so a study that mixes a daily schedule with one-off activities shows each day's own
+activities only. The choices are saved on the study, so they are still in place the next time you
+open it. The study editor has the same **Activities to show** list, and the same picker for
+**Participants to load**, so an applet can be narrowed before the first load.
 
 ### Exports
 

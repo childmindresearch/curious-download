@@ -489,12 +489,17 @@ def create_app(
 
     def participant_choices(data) -> list[dict]:
         """Everyone in the loaded data, for the participant picker."""
-        with_data = {completion.participant for completion in data.completions}
+        submissions: dict[str, int] = {}
+        for completion in data.completions:
+            submissions[completion.participant] = submissions.get(completion.participant, 0) + 1
         return [
             {
                 "key": p.key,
                 "label": p.label,
-                "hasData": p.key in with_data,
+                "nickname": p.nickname,
+                "tag": p.tag,
+                "hasData": p.key in submissions,
+                "submissions": submissions.get(p.key, 0),
                 "removed": p.is_removed_everywhere(),
                 "applets": [data.applets[a]["name"] for a in sorted(p.applet_ids) if a in data.applets],
             }

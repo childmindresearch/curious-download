@@ -584,6 +584,8 @@ def scan_participants(
             {
                 "key": p.key,
                 "label": p.label,
+                "nickname": p.nickname,
+                "tag": p.tag,
                 "applets": [data.applets[a]["name"] for a in sorted(p.applet_ids) if a in data.applets],
                 "submissions": counts_by_key.get(p.key, 0) if submissions_known else None,
                 "hasData": (counts_by_key.get(p.key, 0) > 0) if submissions_known else None,

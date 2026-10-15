@@ -26,6 +26,9 @@
     entityChoice: null, // null = all, else an array of entity keys
     participantChoice: null, // null = all, else an array of participant keys
     onlyWithData: false,
+    hideEmpty: true,
+    editorPeople: [], // the editor's participant list (from a scan, or the saved keys)
+    editorChosen: null, // null = everyone in editorPeople
     focus: null,
     pollTimer: null,
     editing: null, // the config being edited (null when creating)
@@ -126,6 +129,7 @@
     dash.entityChoice = dash.current && dash.current.entities ? dash.current.entities : null;
     dash.participantChoice = dash.current && dash.current.participants ? dash.current.participants : null;
     dash.onlyWithData = Boolean(dash.current && dash.current.only_with_data);
+    dash.hideEmpty = dash.current ? dash.current.hide_empty_columns !== false : true;
     if (dash.current) localStorage.setItem("dashStudy", dash.current.id);
     $("dash-edit").disabled = !dash.current;
     $("dash-delete").disabled = !dash.current;
@@ -243,7 +247,9 @@
     $("dash-use-history").checked = config ? config.use_history !== false : true;
     $("dash-scope").value = config && config.participants ? "chosen" : config && config.only_with_data ? "with_data" : "all";
     dash.scan = null;
-    fillEditorParticipants(config && config.participants ? config.participants.map((key) => ({ key, label: key })) : []);
+    dash.editorChosen = config && config.participants ? [...config.participants] : null;
+    dash.editorPeople = dash.editorChosen ? dash.editorChosen.map((key) => ({ key, label: key })) : [];
+    updateEditorChosen();
     $("dash-scan-status").textContent = "";
     toggleScope();
     const owner = config && config.applets.length ? config.applets[0].ownerId : $("dash-workspace").value;
@@ -377,27 +383,13 @@
   $("dash-scope").onchange = toggleScope;
 
   // The editor's participant list comes from a quick scan: who is in the applets and how much each submitted.
-  function fillEditorParticipants(people) {
-    const container = $("dash-editor-participants");
-    const options = container.querySelector(".options");
-    const previouslyChecked = new Set([...options.querySelectorAll("input:checked")].map((box) => box.value));
-    const hadList = options.querySelectorAll("input").length > 0;
-    const saved = dash.editing && dash.editing.participants ? new Set(dash.editing.participants) : null;
-    options.innerHTML = "";
-    if (!people.length) {
-      options.append(el("div", { class: "fineprint" }, "Click “Fetch the participant list” to choose participants."));
-      return;
-    }
-    for (const person of people) {
-      const checkbox = el("input", { type: "checkbox", value: person.key });
-      checkbox.dataset.hasData = person.hasData ? "1" : "";
-      checkbox.checked = hadList ? previouslyChecked.has(person.key) : saved ? saved.has(person.key) : true;
-      const label = el("label", { class: person.hasData === false ? "no-data" : "" }, checkbox, " ", person.label);
-      if (person.submissions != null) label.append(el("small", {}, ` — ${person.submissions} submission(s)`));
-      if (person.removed) label.append(el("small", {}, " — removed"));
-      options.append(label);
-    }
-    bindChecklistSearch(container);
+  function updateEditorChosen() {
+    const people = dash.editorPeople;
+    $("dash-editor-pick").hidden = !people.length;
+    const chosen = dash.editorChosen ? dash.editorChosen.length : people.length;
+    $("dash-editor-chosen").textContent = people.length
+      ? `${chosen} of ${people.length} participant(s) chosen${dash.scan ? "" : " (from the saved study; fetch the list to see who they are)"}.`
+      : "";
   }
 
   $("dash-scan").onclick = async () => {
@@ -414,12 +406,18 @@
     $("dash-scan-status").textContent = "Reading participants and submission counts…";
     try {
       dash.scan = await post("/api/dashboard/scan", { applets, aliases, dataFrom: $("dash-data-from").value || null });
-      fillEditorParticipants(dash.scan.participants);
-      const withData = dash.scan.participants.filter((person) => person.hasData).length;
+      dash.editorPeople = dash.scan.participants;
+      if (dash.editorChosen) {
+        const known = new Set(dash.editorPeople.map((person) => person.key));
+        dash.editorChosen = dash.editorChosen.filter((key) => known.has(key));
+      }
+      const withData = dash.editorPeople.filter((person) => person.hasData).length;
       $("dash-scan-status").textContent = dash.scan.submissionsKnown
-        ? `${dash.scan.participants.length} participant(s), ${withData} with data.`
-        : `${dash.scan.participants.length} participant(s); submission counts not available.`;
+        ? `${dash.editorPeople.length} participant(s), ${withData} with data.`
+        : `${dash.editorPeople.length} participant(s); submission counts not available.`;
       for (const warning of dash.scan.warnings || []) $("dash-scan-status").textContent += ` ${warning}`;
+      updateEditorChosen();
+      openEditorPicker();
     } catch (error) {
       $("dash-scan-status").textContent = "";
       setError("dash-editor-error", error.message);
@@ -427,19 +425,23 @@
       button.disabled = false;
     }
   };
-  $("dash-editor-participants-all").onclick = () => {
-    for (const box of $("dash-editor-participants").querySelectorAll(".options input")) box.checked = true;
-  };
-  $("dash-editor-participants-none").onclick = () => {
-    for (const box of $("dash-editor-participants").querySelectorAll(".options input")) box.checked = false;
-  };
-  $("dash-editor-participants-data").onclick = () => {
-    for (const box of $("dash-editor-participants").querySelectorAll(".options input")) box.checked = box.dataset.hasData === "1";
-  };
+
+  function openEditorPicker() {
+    openParticipantPicker({
+      title: "Choose participants to load",
+      people: dash.editorPeople,
+      selected: dash.editorChosen,
+      onApply: (choice) => {
+        dash.editorChosen = choice;
+        updateEditorChosen();
+      },
+    });
+  }
+  $("dash-editor-pick").onclick = openEditorPicker;
 
   function editorParticipants() {
-    const boxes = [...$("dash-editor-participants").querySelectorAll(".options input")];
-    return boxes.filter((box) => box.checked).map((box) => box.value);
+    if (dash.editorChosen) return dash.editorChosen;
+    return dash.editorPeople.map((person) => person.key);
   }
 
   function toggleTypeOptions() {
@@ -533,21 +535,25 @@
     $("dash-search").value = "";
     $("dash-sort").value = "label";
     $("dash-entities-mode").value = dash.entityChoice ? "some" : "all";
+    $("dash-only-with-data").checked = dash.onlyWithData;
+    $("dash-hide-empty").checked = dash.hideEmpty;
+    updateParticipantsButton();
+    fillEntityChecklist();
+    syncControlVisibility();
+  }
+
+  function updateParticipantsButton() {
     // A saved choice that covers everyone who was loaded is "All" as far as the view is concerned.
     const loaded = ((dash.current.data && dash.current.data.participantList) || []).map((p) => p.key);
     const narrows = dash.participantChoice && loaded.some((key) => !dash.participantChoice.includes(key));
-    $("dash-participants-mode").value = narrows ? "some" : "all";
-    $("dash-only-with-data").checked = dash.onlyWithData;
-    fillEntityChecklist();
-    fillParticipantChecklist();
-    syncControlVisibility();
+    $("dash-participants-btn").textContent = narrows ? `${dash.participantChoice.filter((key) => loaded.includes(key)).length} of ${loaded.length} chosen…` : "All…";
   }
 
   // The chosen participants, activities, and the with-data switch are saved on the study.
   const CONFIG_FIELDS = [
-    "id", "name", "view", "applets", "entities", "participants", "only_with_data", "use_history", "start_rule",
-    "start_entity", "study_days", "manual_starts", "aliases", "late_counts_as_done", "count_from_joined",
-    "include_removed", "data_from", "granularity", "created",
+    "id", "name", "view", "applets", "entities", "participants", "only_with_data", "use_history",
+    "hide_empty_columns", "start_rule", "start_entity", "study_days", "manual_starts", "aliases",
+    "late_counts_as_done", "count_from_joined", "include_removed", "data_from", "granularity", "created",
   ];
 
   async function persistChoices() {
@@ -557,6 +563,7 @@
     body.entities = dash.entityChoice;
     body.participants = dash.participantChoice;
     body.only_with_data = dash.onlyWithData;
+    body.hide_empty_columns = dash.hideEmpty;
     try {
       const saved = await post("/api/dashboard/studies", body);
       Object.assign(dash.current, saved);
@@ -567,49 +574,191 @@
     }
   }
 
-  function fillParticipantChecklist() {
-    const container = $("dash-participants-list");
-    const options = container.querySelector(".options");
-    options.innerHTML = "";
-    const participants = (dash.current.data && dash.current.data.participantList) || [];
-    for (const participant of participants) {
-      const checkbox = el("input", { type: "checkbox", value: participant.key });
-      checkbox.checked = !dash.participantChoice || dash.participantChoice.includes(participant.key);
-      const label = el("label", { class: participant.hasData ? "" : "no-data" }, checkbox, " ", participant.label);
-      if (!participant.hasData) label.append(el("small", {}, " — no data"));
-      if (participant.removed) label.append(el("small", {}, " — removed"));
-      options.append(label);
-    }
-    if (dash.current.participants || dash.current.only_with_data) {
-      options.prepend(
-        el("div", { class: "fineprint" }, "Only the participants chosen under “Participants to load” were loaded; edit the study to load others."),
-      );
-    }
-    container.hidden = $("dash-participants-mode").value !== "some";
-    bindChecklistSearch(container);
+  // The people shown by the view-level picker: everyone loaded, with what the current grid knows about them.
+  function viewPeople() {
+    const summaries = new Map((dash.grid ? dash.grid.rows : []).map((row) => [row.key, row.summary]));
+    return ((dash.current.data && dash.current.data.participantList) || []).map((person) => {
+      const summary = summaries.get(person.key);
+      return { ...person, pct: summary ? summary.pct : null, last: summary ? summary.last : null };
+    });
   }
 
-  $("dash-participants-mode").onchange = () => {
-    const some = $("dash-participants-mode").value === "some";
-    $("dash-participants-list").hidden = !some;
-    if (!some) {
-      dash.participantChoice = null;
-      persistChoices().then(loadView);
-    }
+  $("dash-participants-btn").onclick = () => {
+    if (!dash.current || !dash.current.loaded) return;
+    openParticipantPicker({
+      title: "Choose participants to show",
+      people: viewPeople(),
+      selected: dash.participantChoice,
+      note:
+        dash.current.participants || dash.current.only_with_data
+          ? "Only the participants chosen under “Participants to load” were loaded; edit the study to load others."
+          : "",
+      onApply: (choice) => {
+        dash.participantChoice = choice;
+        updateParticipantsButton();
+        persistChoices().then(loadView);
+      },
+    });
   };
-  $("dash-participants-apply").onclick = () => {
-    const boxes = [...$("dash-participants-list").querySelectorAll(".options input")];
-    const checked = boxes.filter((box) => box.checked).map((box) => box.value);
-    dash.participantChoice = checked.length === boxes.length ? null : checked;
-    if (!dash.participantChoice) $("dash-participants-mode").value = "all";
+  $("dash-hide-empty").onchange = () => {
+    dash.hideEmpty = $("dash-hide-empty").checked;
     persistChoices().then(loadView);
   };
-  $("dash-participants-all").onclick = () => {
-    for (const box of $("dash-participants-list").querySelectorAll(".options input")) box.checked = true;
+
+  // -- the participant picker dialog -------------------------------------------------------------
+
+  const picker = { people: [], selected: new Set(), shown: [], onApply: null };
+
+  function openParticipantPicker({ title, people, selected, onApply, note }) {
+    picker.people = people;
+    picker.selected = new Set(selected || people.map((person) => person.key));
+    picker.onApply = onApply;
+    $("dash-picker-title").textContent = title;
+    $("dash-picker-search").value = "";
+    $("dash-picker-data").value = "";
+    $("dash-picker-sort").value = "id";
+    const tags = [...new Set(people.map((person) => person.tag).filter(Boolean))].sort();
+    const applets = [...new Set(people.flatMap((person) => person.applets || []))].sort();
+    const tagSelect = $("dash-picker-tag");
+    tagSelect.innerHTML = "";
+    tagSelect.append(el("option", { value: "" }, "Any tag"));
+    for (const tag of tags) tagSelect.append(el("option", { value: tag }, tag));
+    tagSelect.parentElement.hidden = false;
+    tagSelect.hidden = !tags.length;
+    const appletSelect = $("dash-picker-applet");
+    appletSelect.innerHTML = "";
+    appletSelect.append(el("option", { value: "" }, "Any applet"));
+    for (const applet of applets) appletSelect.append(el("option", { value: applet }, applet));
+    appletSelect.hidden = applets.length < 2;
+    $("dash-picker-count").title = note || "";
+    renderPicker();
+    $("dash-picker-modal").hidden = false;
+    $("dash-picker-search").focus();
+  }
+
+  function pickerShown() {
+    const query = $("dash-picker-search").value.trim().toLowerCase();
+    const data = $("dash-picker-data").value;
+    const tag = $("dash-picker-tag").value;
+    const applet = $("dash-picker-applet").value;
+    const sort = $("dash-picker-sort").value;
+    const shown = picker.people.filter((person) => {
+      if (query && !`${person.key} ${person.nickname || ""} ${person.tag || ""}`.toLowerCase().includes(query)) return false;
+      if (data === "yes" && !person.hasData) return false;
+      if (data === "no" && person.hasData) return false;
+      if (tag && person.tag !== tag) return false;
+      if (applet && !(person.applets || []).includes(applet)) return false;
+      return true;
+    });
+    const byId = (a, b) => a.key.localeCompare(b.key, undefined, { numeric: true });
+    shown.sort((a, b) => {
+      if (sort === "tag") return (a.tag || "").localeCompare(b.tag || "") || byId(a, b);
+      if (sort === "data") return (b.submissions || 0) - (a.submissions || 0) || byId(a, b);
+      if (sort === "pct") {
+        if (a.pct == null && b.pct == null) return byId(a, b);
+        if (a.pct == null) return 1;
+        if (b.pct == null) return -1;
+        return a.pct - b.pct || byId(a, b);
+      }
+      if (sort === "last") {
+        if (!a.last && !b.last) return byId(a, b);
+        if (!a.last) return -1;
+        if (!b.last) return 1;
+        return a.last.localeCompare(b.last) || byId(a, b);
+      }
+      return byId(a, b);
+    });
+    return shown;
+  }
+
+  function renderPicker() {
+    picker.shown = pickerShown();
+    const table = $("dash-picker-table");
+    table.innerHTML = "";
+    const hasPct = picker.people.some((person) => person.pct != null || person.last);
+    const hasCounts = picker.people.some((person) => person.submissions != null);
+    const allShownTicked = picker.shown.length > 0 && picker.shown.every((person) => picker.selected.has(person.key));
+    const headBox = el("input", { type: "checkbox", title: "Tick or untick everyone shown" });
+    headBox.checked = allShownTicked;
+    headBox.onchange = () => setShown(headBox.checked);
+    const headers = ["Secret ID", "Nickname", "Tag", "Applets", hasCounts ? "Submissions" : "Data"];
+    if (hasPct) headers.push("Adherence", "Last completion");
+    table.append(el("tr", {}, el("th", {}, headBox), ...headers.map((text) => el("th", {}, text))));
+    if (!picker.shown.length) {
+      const cellNode = el("td", { class: "empty" }, picker.people.length ? "Nobody matches these filters." : "No participants.");
+      cellNode.colSpan = headers.length + 1;
+      table.append(el("tr", {}, cellNode));
+    }
+    for (const person of picker.shown) {
+      const box = el("input", { type: "checkbox" });
+      box.checked = picker.selected.has(person.key);
+      box.onchange = () => {
+        if (box.checked) picker.selected.add(person.key);
+        else picker.selected.delete(person.key);
+        updatePickerCount();
+      };
+      const row = el(
+        "tr",
+        { class: person.hasData === false ? "no-data" : "" },
+        el("td", {}, box),
+        el("td", {}, person.key, person.removed ? el("small", { class: "fineprint" }, " removed") : ""),
+        el("td", {}, person.nickname || ""),
+        el("td", {}, person.tag || ""),
+        el("td", {}, (person.applets || []).join(", ")),
+        el("td", { class: "num" }, hasCounts ? (person.submissions == null ? "–" : String(person.submissions)) : person.hasData ? "✓" : "–"),
+      );
+      if (hasPct) {
+        row.append(el("td", { class: "num" }, pct(person.pct)), el("td", {}, person.last ? when(person.last) : ""));
+      }
+      row.onclick = (event) => {
+        if (event.target === box) return;
+        box.checked = !box.checked;
+        box.onchange();
+      };
+      table.append(row);
+    }
+    updatePickerCount();
+  }
+
+  function updatePickerCount() {
+    const note = $("dash-picker-count").title;
+    $("dash-picker-count").textContent = `${picker.selected.size} of ${picker.people.length} ticked · ${picker.shown.length} shown${note ? ` · ${note}` : ""}`;
+  }
+
+  function setShown(ticked) {
+    for (const person of picker.shown) {
+      if (ticked) picker.selected.add(person.key);
+      else picker.selected.delete(person.key);
+    }
+    renderPicker();
+  }
+
+  for (const id of ["dash-picker-search", "dash-picker-data", "dash-picker-tag", "dash-picker-applet", "dash-picker-sort"]) {
+    $(id).oninput = renderPicker;
+    $(id).onchange = renderPicker;
+  }
+  $("dash-picker-tick-shown").onclick = () => setShown(true);
+  $("dash-picker-untick-shown").onclick = () => setShown(false);
+  $("dash-picker-tick-all").onclick = () => {
+    picker.selected = new Set(picker.people.map((person) => person.key));
+    renderPicker();
   };
-  $("dash-participants-none").onclick = () => {
-    for (const box of $("dash-participants-list").querySelectorAll(".options input")) box.checked = false;
+  $("dash-picker-untick-all").onclick = () => {
+    picker.selected = new Set();
+    renderPicker();
   };
+  $("dash-picker-cancel").onclick = () => {
+    $("dash-picker-modal").hidden = true;
+  };
+  $("dash-picker-modal").onclick = (event) => {
+    if (event.target === $("dash-picker-modal")) $("dash-picker-modal").hidden = true;
+  };
+  $("dash-picker-apply").onclick = () => {
+    $("dash-picker-modal").hidden = true;
+    const everyone = picker.selected.size === picker.people.length;
+    if (picker.onApply) picker.onApply(everyone ? null : [...picker.selected]);
+  };
+
   $("dash-only-with-data").onchange = () => {
     dash.onlyWithData = $("dash-only-with-data").checked;
     persistChoices().then(loadView);
@@ -691,6 +840,7 @@
     if (dash.entityChoice) params.set("entities", dash.entityChoice.join(","));
     if (dash.participantChoice) params.set("participants", dash.participantChoice.join(","));
     params.set("onlyWithData", dash.onlyWithData ? "true" : "false");
+    params.set("hideEmpty", dash.hideEmpty ? "true" : "false");
     if (view === "individual" && dash.focus) params.set("focus", dash.focus);
     return params;
   }
@@ -829,7 +979,10 @@
       .filter((row) => !query || `${row.label} ${row.sub || ""}`.toLowerCase().includes(query))
       .sort(compareRows);
     dash.windowStart = -1;
-    $("dash-count").textContent = `${dash.rows.length} of ${dash.grid.rows.length} row(s) · ${dash.grid.columns.length} column(s)`;
+    const hidden = (dash.grid.hidden && dash.grid.hidden.columns) || 0;
+    $("dash-count").textContent =
+      `${dash.rows.length} of ${dash.grid.rows.length} row(s) · ${dash.grid.columns.length} column(s)` +
+      (hidden ? ` (${hidden} empty column(s) hidden)` : "");
     renderBody(true);
   }
 

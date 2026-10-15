@@ -473,3 +473,23 @@ table.dash-grid tfoot td.cell:hover { outline: none; }
 #dash-editor-participants-block { margin-top: 8px; }
 .dash-scan-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
 .dash-scan-row button { padding: 6px 12px; font-size: 13px; }
+
+/* -- participant picker ---------------------------------------------------- */
+
+.dash-picker-btn { display: block; margin-top: 5px; padding: 6px 12px; font-size: 13px; min-width: 120px; text-align: left; }
+.modal.picker { width: min(1040px, 96vw); max-height: 90vh; }
+.picker-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.picker-toolbar input, .picker-toolbar select { width: auto; margin-top: 0; padding: 6px 8px; font-size: 13px; }
+.picker-toolbar input[type="search"] { flex: 1 1 220px; }
+.picker-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.picker-actions button { padding: 5px 10px; font-size: 12.5px; }
+.picker-actions .fineprint { margin: 0 0 0 auto; }
+.picker-table-wrap { overflow: auto; margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; min-height: 160px; flex: 1 1 auto; }
+table.picker-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.picker-table th, table.picker-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.picker-table th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; z-index: 1; }
+table.picker-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.picker-table tr.no-data td { color: var(--muted); }
+table.picker-table tr:hover td { background: var(--accent-soft); }
+table.picker-table input { width: auto; margin: 0; }
+table.picker-table .empty { color: var(--muted); padding: 16px; text-align: center; }

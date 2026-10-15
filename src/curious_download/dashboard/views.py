@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 import io
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -75,6 +75,7 @@ class ViewParams:
     entity_keys: set[str] | None = None
     participant_keys: set[str] | None = None
     only_with_data: bool = False
+    hide_empty_columns: bool = True
     focus: str | None = None  # individual view: one participant's own timeline
     start_rule: str = "first_completion"
     start_entity: str | None = None
@@ -142,6 +143,7 @@ def view_params(
         entity_keys=entity_keys,
         participant_keys=participant_keys,
         only_with_data=flag("onlyWithData", config.only_with_data),
+        hide_empty_columns=flag("hideEmpty", config.hide_empty_columns),
         focus=query.get("focus") or None,
         start_rule=query.get("startRule") or config.start_rule,
         start_entity=query.get("startEntity") or config.start_entity,
@@ -440,6 +442,7 @@ def _finish(
             "entities": sorted(params.entity_keys) if params.entity_keys is not None else None,
             "participants": sorted(params.participant_keys) if params.participant_keys is not None else None,
             "onlyWithData": params.only_with_data,
+            "hideEmpty": params.hide_empty_columns,
             "focus": params.focus,
             "startRule": params.start_rule,
             "startEntity": params.start_entity,
@@ -977,10 +980,36 @@ def _individual(data: StudyData, params: ViewParams) -> GridResult:
     return _finish("individual", params, [], columns, rows, cells_by_row, details, LEGEND, notes)
 
 
+def hide_empty_columns(grid: dict) -> int:
+    """Drop the columns where nothing was scheduled or done for anyone, so a study that mixes a
+    daily schedule with one-off activities shows each day's own activities only. Day groups shrink
+    or disappear with their columns. Returns the number of columns hidden."""
+    keep = [
+        any(cell is not None and (cell["e"] or cell["x"]) for cell in (row["cells"][index] for row in grid["rows"]))
+        for index in range(len(grid["columns"]))
+    ]
+    hidden = keep.count(False)
+    if hidden:
+        grid["columns"] = [column for column, kept in zip(grid["columns"], keep, strict=True) if kept]
+        for row in grid["rows"]:
+            row["cells"] = [cell for cell, kept in zip(row["cells"], keep, strict=True) if kept]
+        grid["totals"] = [cell for cell, kept in zip(grid["totals"], keep, strict=True) if kept]
+        if grid.get("groups"):
+            spans = Counter(column.get("group") for column in grid["columns"])
+            grid["groups"] = [
+                {**group, "span": spans[group["key"]]} for group in grid["groups"] if spans.get(group["key"])
+            ]
+    grid["hidden"] = {"columns": hidden}
+    return hidden
+
+
 def build(data: StudyData, config: StudyConfig, params: ViewParams) -> GridResult:
-    if params.view == "rolling":
-        return _rolling(data, params, config.manual_starts)
-    return build_view(data, params)
+    result = _rolling(data, params, config.manual_starts) if params.view == "rolling" else build_view(data, params)
+    if params.hide_empty_columns:
+        hide_empty_columns(result.grid)
+    else:
+        result.grid["hidden"] = {"columns": 0}
+    return result
 
 
 # -- CSV -----------------------------------------------------------------------------------

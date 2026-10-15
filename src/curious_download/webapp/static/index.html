@@ -302,17 +302,10 @@
           <div id="dash-editor-participants-block" hidden>
             <div class="dash-scan-row">
               <button class="ghost" id="dash-scan" type="button">Fetch the participant list</button>
+              <button class="ghost" id="dash-editor-pick" type="button" hidden>Choose participants…</button>
               <span id="dash-scan-status" class="fineprint"></span>
             </div>
-            <div class="checklist" id="dash-editor-participants">
-              <input type="search" placeholder="Search participants…">
-              <div class="options"></div>
-              <div class="checklist-buttons">
-                <button class="ghost" id="dash-editor-participants-all" type="button">Tick all</button>
-                <button class="ghost" id="dash-editor-participants-none" type="button">Untick all</button>
-                <button class="ghost" id="dash-editor-participants-data" type="button">Tick those with data</button>
-              </div>
-            </div>
+            <div id="dash-editor-chosen" class="fineprint"></div>
           </div>
 
           <label>Dashboard type</label>
@@ -428,14 +421,15 @@
               </select>
             </label>
             <label>Participants
-              <select id="dash-participants-mode">
-                <option value="all">All</option>
-                <option value="some">Choose…</option>
-              </select>
+              <button class="ghost dash-picker-btn" id="dash-participants-btn" type="button">All</button>
             </label>
             <label class="checkbox-row dash-late-toggle">
               <input type="checkbox" id="dash-only-with-data">
               only participants with data
+            </label>
+            <label class="checkbox-row dash-late-toggle">
+              <input type="checkbox" id="dash-hide-empty" checked>
+              hide empty columns
             </label>
             <label>Sort
               <select id="dash-sort">
@@ -460,15 +454,7 @@
               <button class="primary" id="dash-entities-apply" type="button">Apply</button>
             </div>
           </div>
-          <div class="checklist" id="dash-participants-list" hidden>
-            <input type="search" placeholder="Search participants…">
-            <div class="options"></div>
-            <div class="checklist-buttons">
-              <button class="ghost" id="dash-participants-all" type="button">Tick all</button>
-              <button class="ghost" id="dash-participants-none" type="button">Untick all</button>
-              <button class="primary" id="dash-participants-apply" type="button">Apply</button>
-            </div>
-          </div>
+
           <div id="dash-focus" class="dash-focus" hidden>
             <span id="dash-focus-label"></span>
             <button class="ghost" id="dash-focus-clear" type="button">Back to all participants</button>
@@ -545,6 +531,42 @@
       <div class="dash-cell-body" id="dash-cell-body"></div>
       <div class="modal-buttons">
         <button class="ghost" id="dash-cell-close" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- participant picker -->
+  <div id="dash-picker-modal" class="modal-backdrop" hidden>
+    <div class="modal picker">
+      <h2 id="dash-picker-title">Choose participants</h2>
+      <div class="picker-toolbar">
+        <input type="search" id="dash-picker-search" placeholder="Search ID, nickname, tag…">
+        <select id="dash-picker-data">
+          <option value="">With or without data</option>
+          <option value="yes">With data</option>
+          <option value="no">Without data</option>
+        </select>
+        <select id="dash-picker-tag"><option value="">Any tag</option></select>
+        <select id="dash-picker-applet"><option value="">Any applet</option></select>
+        <select id="dash-picker-sort">
+          <option value="id">Sort by ID</option>
+          <option value="tag">Sort by tag</option>
+          <option value="data">Most data first</option>
+          <option value="pct">Lowest adherence first</option>
+          <option value="last">Oldest last completion first</option>
+        </select>
+      </div>
+      <div class="picker-actions">
+        <button class="ghost" id="dash-picker-tick-shown" type="button">Tick shown</button>
+        <button class="ghost" id="dash-picker-untick-shown" type="button">Untick shown</button>
+        <button class="ghost" id="dash-picker-tick-all" type="button">Tick all</button>
+        <button class="ghost" id="dash-picker-untick-all" type="button">Untick all</button>
+        <span id="dash-picker-count" class="fineprint"></span>
+      </div>
+      <div class="picker-table-wrap"><table class="picker-table" id="dash-picker-table"></table></div>
+      <div class="modal-buttons">
+        <button class="ghost" id="dash-picker-cancel" type="button">Cancel</button>
+        <button class="primary" id="dash-picker-apply" type="button">Apply</button>
       </div>
     </div>
   </div>

@@ -74,6 +74,8 @@ def study_body(**overrides) -> dict:
             {"ownerId": OWNER_ID, "appletId": INTAKE, "name": "Intake"},
         ],
         "aliases": {"p002x": "P002"},
+        # Tests count columns, so empty ones are kept unless a test asks otherwise.
+        "hide_empty_columns": False,
     }
     body.update(overrides)
     return body
@@ -503,6 +505,46 @@ def test_participant_filters(make_client):
     assert {c["entity"] for c in default["columns"]} == {MORNING_KEY}
     everyone = view(client, study["id"], **params, participants="", onlyWithData="false")
     assert [row["label"] for row in everyone["rows"]] == ["P002", "P005"], "an empty parameter keeps the saved choice"
+
+
+def test_hide_empty_columns(make_client):
+    client = make_client()
+    study = loaded_study(client, hide_empty_columns=True)
+    params = {"view": "fixed", "first": day(-10).isoformat(), "last": day(-9).isoformat()}
+    grid = view(client, study["id"], **params)
+    # Day -10: Morning, Evening, Sleep (scheduled) and Baseline (done by P001);
+    # day -9: Morning, Evening, Sleep, and Intake: Consent (done by P002 that day).
+    assert grid["hidden"]["columns"] == 6 and len(grid["columns"]) == 8
+    assert [group["span"] for group in grid["groups"]] == [4, 4]
+    labels = [(column["group"], column["label"]) for column in grid["columns"]]
+    assert (day(-10).isoformat(), "EMA Study: Baseline survey") in labels
+    assert (day(-9).isoformat(), "EMA Study: Baseline survey") not in labels
+    assert (day(-9).isoformat(), "Intake: Consent") in labels
+    assert (day(-10).isoformat(), "Intake: Consent") not in labels
+    assert not any("Demographics" in column["label"] for column in grid["columns"]), "nobody did it in this range"
+    assert all(len(row["cells"]) == 8 for row in grid["rows"]) and len(grid["totals"]) == 8
+    assert cell(grid, "P001", col(day(-10), MORNING_KEY))["s"] == "done"
+
+    everything = view(client, study["id"], **params, hideEmpty="false")
+    assert everything["hidden"]["columns"] == 0 and len(everything["columns"]) == 14
+
+    cross = view(client, study["id"], view="cross")
+    assert cross["hidden"]["columns"] == 0, "every activity was done or scheduled for someone"
+    saved = client.post("/api/dashboard/studies", json={**study, "hide_empty_columns": False}).json()
+    assert saved["hide_empty_columns"] is False
+    assert view(client, study["id"], **params)["hidden"]["columns"] == 0, "the saved switch is the default"
+
+
+def test_participant_rows_carry_details_for_the_picker(make_client):
+    client = make_client()
+    study = loaded_study(client)
+    status = client.get(f"/api/dashboard/studies/{study['id']}").json()
+    people = {p["key"]: p for p in status["data"]["participantList"]}
+    assert (people["P001"]["nickname"], people["P001"]["tag"], people["P001"]["submissions"]) == ("Pat", "Child", 11)
+    assert people["P005"]["submissions"] == 0 and people["P005"]["nickname"] == "Sam"
+    scan = client.post("/api/dashboard/scan", json={"applets": study["applets"], "aliases": study["aliases"]}).json()
+    scanned = {p["key"]: p for p in scan["participants"]}
+    assert (scanned["P001"]["nickname"], scanned["P001"]["tag"]) == ("Pat", "Child")
 
 
 # -- cross-sectional view ------------------------------------------------------------------------------
