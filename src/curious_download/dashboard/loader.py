@@ -14,12 +14,21 @@ from .schedule import bound_current_rules, entity_key, rule_from_event, rules_fr
 
 # Page sizes for the bulk reads. Each export row carries its encrypted answer, so very large pages
 # have made the server fail on big applets; when a page is refused with a server error the loader
-# halves the page size and tries again, down to MIN_PAGE_SIZE.
+# halves the page size and tries again, down to MIN_PAGE_SIZE, and then skips the rows it cannot get.
 EXPORT_PAGE_SIZE = 1000
 HISTORY_PAGE_SIZE = 2000
 RESPONDENTS_PAGE_SIZE = 1000
-MIN_PAGE_SIZE = 100
+SUBMISSIONS_PAGE_SIZE = 10000
+MIN_PAGE_SIZE = 10
+MAX_SKIPPED_PAGES = 20
 SERVER_ERRORS = {500, 502, 503, 504}
+# Ids per filtered request (they travel in the URL).
+ID_CHUNK = 40
+# Below this share of participants a chosen subset is fetched with per-participant filters;
+# above it, reading everything is fewer requests.
+FILTER_BELOW = 0.8
+# A respondent id that matches nobody: with the history endpoint it yields the default events alone.
+NOBODY = "00000000-0000-0000-0000-000000000000"
 
 # Called like Job.progress: progress(stage=None, done=None, total=None, detail=None).
 Progress = Callable[..., None]
@@ -93,18 +102,107 @@ class StudyLoader:
 
     def load(self) -> StudyData:
         applets = self.config.applets
+        many = len(applets) > 1
         for number, applet in enumerate(applets, start=1):
             name = applet.get("name") or applet["appletId"]
-            prefix = f"Applet {number} of {len(applets)}: " if len(applets) > 1 else ""
+            prefix = f"Applet {number} of {len(applets)}: " if many else ""
             self.progress(stage=f"{prefix}reading {name}", detail="activities and participants")
             details = self._load_applet(applet["ownerId"], applet["appletId"])
-            applet_name = details.get("displayName") or name
-            self._load_participants(applet["ownerId"], applet["appletId"], applet_name)
+            self._load_participants(applet["ownerId"], applet["appletId"], details.get("displayName") or name)
+        selected = self._select_participants()
+        for number, applet in enumerate(applets, start=1):
+            applet_id = applet["appletId"]
+            applet_name = self.data.applets[applet_id]["name"]
+            prefix = f"Applet {number} of {len(applets)}: " if many else ""
             self.progress(stage=f"{prefix}reading the schedule of {applet_name}", detail="")
-            self._load_schedule(applet["appletId"], applet_name)
+            self._load_schedule(applet_id, applet_name, selected)
             self.progress(stage=f"{prefix}reading completions of {applet_name}", done=0, total=None)
-            self._load_completions(applet["appletId"], applet_name)
+            self._load_completions(applet_id, applet_name, selected)
+        self._drop_unselected(selected)
         return self.data
+
+    # -- which participants ---------------------------------------------------------------
+
+    def _select_participants(self) -> set[str] | None:
+        """Keys of the participants to load, or None for everyone.
+
+        A study can name its participants, and/or ask for only those who have submitted data; the
+        latter is found from the cheap submission metadata before any answer is read.
+        """
+        selected: set[str] | None = set(self.config.participants) if self.config.participants else None
+        if self.config.only_with_data:
+            with_data: set[str] = set()
+            known = True
+            for applet_id, applet in self.data.applets.items():
+                counts = self._submission_counts(applet_id, applet["name"])
+                if counts is None:
+                    known = False
+                    break
+                for subject_id in counts:
+                    key = self._subject_to_participant.get(subject_id)
+                    if key:
+                        with_data.add(key)
+            if known:
+                selected = with_data if selected is None else selected & with_data
+        return selected
+
+    def _subjects_for(self, applet_id: str, keys: set[str] | None) -> set[str] | None:
+        if keys is None:
+            return None
+        return {
+            p.subject_ids[applet_id]
+            for p in self.data.participants.values()
+            if p.key in keys and applet_id in p.subject_ids
+        }
+
+    def _accounts_for(self, applet_id: str, keys: set[str] | None) -> list[str]:
+        return sorted(
+            {
+                p.user_ids[applet_id]
+                for p in self.data.participants.values()
+                if (keys is None or p.key in keys) and p.user_ids.get(applet_id)
+            }
+        )
+
+    def _submission_counts(self, applet_id: str, applet_name: str) -> dict[str, int] | None:
+        """Completed activities per target subject from the submission metadata; None if unavailable."""
+        reviewer = {e.id for e in self.data.entities.values() if e.applet_id == applet_id and e.reviewable}
+        from_date = _api_day(self.config.data_from)
+        counts: dict[str, int] = {}
+
+        def fetch(page: int, limit: int) -> dict:
+            body = self.client.submissions_page(applet_id, page=page, limit=limit, from_date=from_date)
+            return {"result": body.get("submissions") or [], "count": body.get("submissionsCount") or 0}
+
+        try:
+            for chunk, fetched, total in self._paged(
+                f"scanning the submissions of {applet_name}", fetch, kind="submissions", page_size=SUBMISSIONS_PAGE_SIZE
+            ):
+                for row in chunk:
+                    if row.get("activityId") in reviewer or not row.get("targetSubjectId"):
+                        continue
+                    subject_id = str(row["targetSubjectId"])
+                    counts[subject_id] = counts.get(subject_id, 0) + 1
+                self.progress(detail=f"submissions: {fetched:,} of {total:,}")
+        except ApiError as e:
+            if e.status_code not in (403, 404):
+                raise
+            self.data.warnings.append(
+                f"{applet_name}: who has data could not be checked before loading ({e.message}); everyone is loaded."
+            )
+            return None
+        return counts
+
+    def _drop_unselected(self, selected: set[str] | None) -> None:
+        if selected is None:
+            return
+        for key in [key for key in self.data.participants if key not in selected]:
+            participant = self.data.participants.pop(key)
+            for subject_id in participant.subject_ids.values():
+                self._subject_to_participant.pop(subject_id, None)
+
+    def _chunks(self, ids: list[str]) -> list[list[str]]:
+        return [ids[i : i + ID_CHUNK] for i in range(0, len(ids), ID_CHUNK)]
 
     def _load_applet(self, owner_id: str, applet_id: str) -> dict:
         try:
@@ -154,25 +252,44 @@ class StudyLoader:
 
         `fetch(page, limit)` returns the response body. Rows come back in order; a page refused with
         a server error is retried with a smaller page (pages stay aligned because each new size
-        divides the old one), and the size that worked is kept for the rest of the load.
+        divides the old one), and the size that worked is kept for the rest of the load. Rows the
+        server cannot return even in the smallest page are skipped with a warning, so one bad row
+        does not stop the whole load.
         """
-        rows: list[dict] = []
+        offset = 0
+        total: int | None = None
+        skipped_in_a_row = 0
         limit = self._page_sizes.setdefault(kind, page_size)
         while True:
-            page = len(rows) // limit + 1
+            page = offset // limit + 1
             try:
                 body = fetch(page, limit)
             except ApiError as e:
-                if e.status_code in SERVER_ERRORS and limit > MIN_PAGE_SIZE:
+                if e.status_code not in SERVER_ERRORS:
+                    raise _with_context(e, f"{doing} (page {page}, {limit} per page)") from e
+                if limit > MIN_PAGE_SIZE:
                     limit = self._page_sizes[kind] = max(MIN_PAGE_SIZE, limit // 2)
                     self.progress(detail=f"{doing}: the server refused a page; retrying with {limit} per page")
                     continue
-                raise _with_context(e, f"{doing} (page {page}, {limit} per page)") from e
+                skipped_in_a_row += 1
+                self.data.warnings.append(
+                    f"{doing}: rows {offset + 1:,}–{offset + limit:,} could not be read "
+                    f"(the server answered HTTP {e.status_code}) and were skipped."
+                )
+                self.progress(detail=f"{doing}: skipping rows {offset + 1:,}–{offset + limit:,}")
+                offset += limit
+                if total is not None and offset >= total:
+                    return
+                if skipped_in_a_row >= MAX_SKIPPED_PAGES:
+                    self.data.warnings.append(f"{doing}: gave up after {MAX_SKIPPED_PAGES} unreadable pages in a row.")
+                    return
+                continue
+            skipped_in_a_row = 0
             chunk = body.get(result_key) or []
-            rows.extend(chunk)
             total = int(body.get("count") or 0)
-            yield chunk, len(rows), total
-            if not chunk or len(rows) >= total:
+            offset += len(chunk)
+            yield chunk, offset, total
+            if not chunk or offset >= total:
                 return
 
     def _load_participants(self, owner_id: str, applet_id: str, applet_name: str) -> None:
@@ -210,7 +327,7 @@ class StudyLoader:
                 participant.removed[applet_id] = bool(detail.get("subjectIsDeleted"))
                 self._subject_to_participant[subject_id] = participant.key
 
-    def _load_schedule(self, applet_id: str, applet_name: str) -> None:
+    def _load_schedule(self, applet_id: str, applet_name: str, selected: set[str] | None) -> None:
         rules = []
         try:
             for event in self.client.applet_events(applet_id):
@@ -231,7 +348,7 @@ class StudyLoader:
         with_individual = [
             (p, p.user_ids.get(applet_id))
             for p in self.data.participants.values()
-            if p.individual.get(applet_id) and p.user_ids.get(applet_id)
+            if p.individual.get(applet_id) and p.user_ids.get(applet_id) and (selected is None or p.key in selected)
         ]
         for number, (participant, user_id) in enumerate(with_individual, start=1):
             self.progress(detail=f"individual schedule {number} of {len(with_individual)}: {participant.secret_id}")
@@ -250,20 +367,39 @@ class StudyLoader:
                 if rule:
                     rules.append(rule)
 
-        history = self._load_history(applet_id, applet_name)
+        if not self.config.use_history:
+            self.data.history_available[applet_id] = False
+            self.data.rules[applet_id] = rules
+            return
+        history = self._load_history(applet_id, applet_name, selected)
         self.data.rules[applet_id] = bound_current_rules(rules, history) if history is not None else rules
 
-    def _load_history(self, applet_id: str, applet_name: str) -> list | None:
+    def _load_history(self, applet_id: str, applet_name: str, selected: set[str] | None) -> list | None:
+        """Every event version, or with a selection only the chosen people's (plus the default events)."""
         rows: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        if selected is None:
+            batches: list[list[str]] = [[]]
+        else:
+            accounts = self._accounts_for(applet_id, selected)
+            batches = self._chunks(accounts) or [[NOBODY]]
         try:
-            for chunk, fetched, total in self._paged(
-                f"reading the schedule history of {applet_name}",
-                lambda page, limit: self.client.applet_events_history_page(applet_id, page=page, limit=limit),
-                kind="history",
-                page_size=HISTORY_PAGE_SIZE,
-            ):
-                rows.extend(chunk)
-                self.progress(detail=f"schedule history: {fetched:,} of {total:,} event versions")
+            for number, batch in enumerate(batches, start=1):
+                for chunk, fetched, total in self._paged(
+                    f"reading the schedule history of {applet_name}",
+                    lambda page, limit, batch=batch: self.client.applet_events_history_page(
+                        applet_id, page=page, limit=limit, respondent_ids=batch
+                    ),
+                    kind="history",
+                    page_size=HISTORY_PAGE_SIZE,
+                ):
+                    for row in chunk:
+                        key = (str(row.get("eventId")), str(row.get("eventVersion")))
+                        if key not in seen:
+                            seen.add(key)
+                            rows.append(row)
+                    where = f"batch {number} of {len(batches)}, " if len(batches) > 1 else ""
+                    self.progress(detail=f"schedule history: {where}{fetched:,} of {total:,} event versions")
         except ApiError as e:
             if e.status_code not in (403, 404):
                 raise
@@ -290,28 +426,52 @@ class StudyLoader:
                 )
         return rules_from_history(applet_id, rows)
 
-    def _load_completions(self, applet_id: str, applet_name: str) -> None:
+    def _load_completions(self, applet_id: str, applet_name: str, selected: set[str] | None) -> None:
         seen: set[str] = set()
         from_date = _api_day(self.config.data_from)
+        subjects = self._subjects_for(applet_id, selected)
+        in_applet = sum(1 for p in self.data.participants.values() if applet_id in p.subject_ids)
+        if subjects is not None and in_applet and len(subjects) < FILTER_BELOW * in_applet:
+            batches = self._chunks(sorted(subjects))
+        else:
+            batches = [[]]  # everyone, unfiltered
+        if not batches:
+            return
 
-        def fetch(page: int, limit: int) -> dict:
-            body = self.client.export_page(applet_id, page=page, limit=limit, from_date=from_date)
-            # The page's activity definitions ride along; keep them for activities deleted since.
-            for definition in (body.get("result") or {}).get("activities") or []:
-                self._register_deleted_activity(applet_id, applet_name, definition)
-            return {"result": (body.get("result") or {}).get("answers") or [], "count": body.get("count") or 0}
+        def make_fetch(batch: list[str]):
+            def fetch(page: int, limit: int) -> dict:
+                body = self.client.export_page(
+                    applet_id, page=page, limit=limit, target_subject_ids=batch, from_date=from_date
+                )
+                # The page's activity definitions ride along; keep them for activities deleted since.
+                for definition in (body.get("result") or {}).get("activities") or []:
+                    self._register_deleted_activity(applet_id, applet_name, definition)
+                return {"result": (body.get("result") or {}).get("answers") or [], "count": body.get("count") or 0}
 
-        for chunk, fetched, total in self._paged(
-            f"reading the completions of {applet_name}", fetch, kind="completions", page_size=EXPORT_PAGE_SIZE
-        ):
-            for answer in chunk:
-                if answer.get("id") in seen:
-                    continue
-                seen.add(answer.get("id"))
-                completion = self._completion(applet_id, answer)
-                if completion:
-                    self.data.completions.append(completion)
-            self.progress(done=min(fetched, total) if total else fetched, total=total or None)
+            return fetch
+
+        for number, batch in enumerate(batches, start=1):
+            for chunk, fetched, total in self._paged(
+                f"reading the completions of {applet_name}",
+                make_fetch(batch),
+                kind="completions",
+                page_size=EXPORT_PAGE_SIZE,
+            ):
+                for answer in chunk:
+                    if answer.get("id") in seen:
+                        continue
+                    seen.add(answer.get("id"))
+                    completion = self._completion(applet_id, answer)
+                    if completion:
+                        self.data.completions.append(completion)
+                if len(batches) > 1:
+                    self.progress(
+                        done=number,
+                        total=len(batches),
+                        detail=f"participants {(number - 1) * ID_CHUNK + 1}–{min(number * ID_CHUNK, len(subjects or []))} of {len(subjects or [])}: {fetched:,} completions",
+                    )
+                else:
+                    self.progress(done=min(fetched, total) if total else fetched, total=total or None)
 
     def _register_deleted_activity(self, applet_id: str, applet_name: str, definition: dict) -> None:
         activity_id = definition.get("id") or str(definition.get("idVersion") or "")[:36]
@@ -393,3 +553,44 @@ def host_tz_offset_minutes(now: datetime | None = None) -> int:
 
 def today_local(offset_minutes: int) -> date:
     return (datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=offset_minutes)).date()
+
+
+def scan_participants(
+    client: CuriousClient, applets: list[dict], *, aliases: dict[str, str] | None = None, data_from: str | None = None
+) -> dict:
+    """Who is in these applets and how much each has submitted, without reading any answer.
+
+    Used by the study editor so participants can be chosen before the first load.
+    """
+    config = StudyConfig(id="scan", name="scan", server="", applets=applets, aliases=aliases or {}, data_from=data_from)
+    scanner = StudyLoader(client, config)
+    submissions_known = True
+    counts_by_key: dict[str, int] = {}
+    for applet in applets:
+        details = scanner._load_applet(applet["ownerId"], applet["appletId"])
+        name = details.get("displayName") or applet.get("name") or applet["appletId"]
+        scanner._load_participants(applet["ownerId"], applet["appletId"], name)
+        counts = scanner._submission_counts(applet["appletId"], name)
+        if counts is None:
+            submissions_known = False
+            continue
+        for subject_id, count in counts.items():
+            key = scanner._subject_to_participant.get(subject_id)
+            if key:
+                counts_by_key[key] = counts_by_key.get(key, 0) + count
+    data = scanner.data
+    return {
+        "participants": [
+            {
+                "key": p.key,
+                "label": p.label,
+                "applets": [data.applets[a]["name"] for a in sorted(p.applet_ids) if a in data.applets],
+                "submissions": counts_by_key.get(p.key, 0) if submissions_known else None,
+                "hasData": (counts_by_key.get(p.key, 0) > 0) if submissions_known else None,
+                "removed": p.is_removed_everywhere(),
+            }
+            for p in sorted(data.participants.values(), key=lambda p: p.secret_id.lower())
+        ],
+        "submissionsKnown": submissions_known,
+        "warnings": data.warnings,
+    }

@@ -33,7 +33,7 @@ from ..cli import UsageError, _load_settings, _parse_day, _save_settings
 from ..client import EXPORT_ROLES, ApiError, CuriousClient, MfaRequiredError, Participant
 from ..crypto import AppletDecryptor, AppletPasswordError
 from ..dashboard import config as studies
-from ..dashboard.loader import host_tz_offset_minutes, load_study, today_local
+from ..dashboard.loader import host_tz_offset_minutes, load_study, scan_participants, today_local
 from ..dashboard.views import GridResult, build, grid_csv, long_csv, view_params
 from ..export import DEFAULT_PAGE_SIZE, ExportFilters
 from . import runners
@@ -116,6 +116,12 @@ class CountsJobBody(BaseModel):
 
 class RevealBody(BaseModel):
     path: str
+
+
+class DashboardScanBody(BaseModel):
+    applets: list[dict] = Field(default_factory=list)  # [{ownerId, appletId, name}]
+    aliases: dict[str, str] = Field(default_factory=dict)
+    dataFrom: str | None = None
 
 
 class DashboardExportBody(BaseModel):
@@ -575,6 +581,15 @@ def create_app(
     @app.get("/api/dashboard/studies/{study_id}")
     def dashboard_study(study_id: str):
         return study_payload(study_or_404(study_id))
+
+    @app.post("/api/dashboard/scan")
+    def dashboard_scan(body: DashboardScanBody):
+        """The participants of some applets with their submission counts, for choosing before a load."""
+        current = session()
+        applets = [a for a in body.applets if a.get("ownerId") and a.get("appletId")]
+        if not applets:
+            raise HTTPException(400, "Tick at least one applet first.")
+        return scan_participants(current.client, applets, aliases=body.aliases, data_from=body.dataFrom)
 
     @app.post("/api/dashboard/studies/{study_id}/load")
     def dashboard_load(study_id: str):

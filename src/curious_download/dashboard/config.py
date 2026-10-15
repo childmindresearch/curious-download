@@ -31,6 +31,7 @@ class StudyConfig:
     entities: list[str] | None = None  # entity keys to show; None means all visible activities and flows
     participants: list[str] | None = None  # participant keys (secret IDs) to show; None means everyone
     only_with_data: bool = False  # leave out participants who have not completed anything
+    use_history: bool = True  # read the schedule history (slow on very large studies)
     start_rule: str = "first_completion"  # rolling view: how each participant's day 1 is found
     start_entity: str | None = None  # rolling view: with first_completion, only this activity or flow counts
     study_days: int = 28  # rolling view: how many study days to show

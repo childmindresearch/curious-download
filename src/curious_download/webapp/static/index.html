@@ -290,6 +290,31 @@
             <div class="options"></div>
           </div>
 
+          <label>Participants to load
+            <select id="dash-scope">
+              <option value="all">Everyone in the applets</option>
+              <option value="with_data">Only participants who have submitted data</option>
+              <option value="chosen">Only the participants I pick below</option>
+            </select>
+            <small>On large studies, loading only some participants is much faster: completions, individual
+              schedules, and the schedule history are read just for them.</small>
+          </label>
+          <div id="dash-editor-participants-block" hidden>
+            <div class="dash-scan-row">
+              <button class="ghost" id="dash-scan" type="button">Fetch the participant list</button>
+              <span id="dash-scan-status" class="fineprint"></span>
+            </div>
+            <div class="checklist" id="dash-editor-participants">
+              <input type="search" placeholder="Search participants…">
+              <div class="options"></div>
+              <div class="checklist-buttons">
+                <button class="ghost" id="dash-editor-participants-all" type="button">Tick all</button>
+                <button class="ghost" id="dash-editor-participants-none" type="button">Untick all</button>
+                <button class="ghost" id="dash-editor-participants-data" type="button">Tick those with data</button>
+              </div>
+            </div>
+          </div>
+
           <label>Dashboard type</label>
           <div class="type-cards" id="dash-type">
             <label class="type-card">
@@ -353,6 +378,11 @@
             <label class="checkbox-row">
               <input type="checkbox" id="dash-include-removed">
               Show participants who were removed from the applet (their data is still on the server)
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="dash-use-history" checked>
+              Read the schedule history, so a schedule change made mid-study only counts from its date (slower on
+              very large studies; switch off if loading takes too long)
             </label>
             <label class="inline-number">Only fetch completions received from
               <input type="date" id="dash-data-from">

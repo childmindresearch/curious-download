@@ -240,6 +240,12 @@
     $("dash-count-from-joined").checked = config ? config.count_from_joined : true;
     $("dash-include-removed").checked = config ? config.include_removed : false;
     $("dash-data-from").value = (config && config.data_from) || "";
+    $("dash-use-history").checked = config ? config.use_history !== false : true;
+    $("dash-scope").value = config && config.participants ? "chosen" : config && config.only_with_data ? "with_data" : "all";
+    dash.scan = null;
+    fillEditorParticipants(config && config.participants ? config.participants.map((key) => ({ key, label: key })) : []);
+    $("dash-scan-status").textContent = "";
+    toggleScope();
     const owner = config && config.applets.length ? config.applets[0].ownerId : $("dash-workspace").value;
     if (owner) $("dash-workspace").value = owner;
     await loadEditorApplets(config ? config.applets.map((applet) => applet.appletId) : []);
@@ -365,6 +371,77 @@
     };
   }
 
+  function toggleScope() {
+    $("dash-editor-participants-block").hidden = $("dash-scope").value !== "chosen";
+  }
+  $("dash-scope").onchange = toggleScope;
+
+  // The editor's participant list comes from a quick scan: who is in the applets and how much each submitted.
+  function fillEditorParticipants(people) {
+    const container = $("dash-editor-participants");
+    const options = container.querySelector(".options");
+    const previouslyChecked = new Set([...options.querySelectorAll("input:checked")].map((box) => box.value));
+    const hadList = options.querySelectorAll("input").length > 0;
+    const saved = dash.editing && dash.editing.participants ? new Set(dash.editing.participants) : null;
+    options.innerHTML = "";
+    if (!people.length) {
+      options.append(el("div", { class: "fineprint" }, "Click “Fetch the participant list” to choose participants."));
+      return;
+    }
+    for (const person of people) {
+      const checkbox = el("input", { type: "checkbox", value: person.key });
+      checkbox.dataset.hasData = person.hasData ? "1" : "";
+      checkbox.checked = hadList ? previouslyChecked.has(person.key) : saved ? saved.has(person.key) : true;
+      const label = el("label", { class: person.hasData === false ? "no-data" : "" }, checkbox, " ", person.label);
+      if (person.submissions != null) label.append(el("small", {}, ` — ${person.submissions} submission(s)`));
+      if (person.removed) label.append(el("small", {}, " — removed"));
+      options.append(label);
+    }
+    bindChecklistSearch(container);
+  }
+
+  $("dash-scan").onclick = async () => {
+    const applets = checkedApplets();
+    if (!applets.length) return setError("dash-editor-error", "Tick at least one applet first.");
+    let aliases;
+    try {
+      aliases = parseLines($("dash-aliases").value);
+    } catch (error) {
+      return setError("dash-editor-error", error.message);
+    }
+    const button = $("dash-scan");
+    button.disabled = true;
+    $("dash-scan-status").textContent = "Reading participants and submission counts…";
+    try {
+      dash.scan = await post("/api/dashboard/scan", { applets, aliases, dataFrom: $("dash-data-from").value || null });
+      fillEditorParticipants(dash.scan.participants);
+      const withData = dash.scan.participants.filter((person) => person.hasData).length;
+      $("dash-scan-status").textContent = dash.scan.submissionsKnown
+        ? `${dash.scan.participants.length} participant(s), ${withData} with data.`
+        : `${dash.scan.participants.length} participant(s); submission counts not available.`;
+      for (const warning of dash.scan.warnings || []) $("dash-scan-status").textContent += ` ${warning}`;
+    } catch (error) {
+      $("dash-scan-status").textContent = "";
+      setError("dash-editor-error", error.message);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  $("dash-editor-participants-all").onclick = () => {
+    for (const box of $("dash-editor-participants").querySelectorAll(".options input")) box.checked = true;
+  };
+  $("dash-editor-participants-none").onclick = () => {
+    for (const box of $("dash-editor-participants").querySelectorAll(".options input")) box.checked = false;
+  };
+  $("dash-editor-participants-data").onclick = () => {
+    for (const box of $("dash-editor-participants").querySelectorAll(".options input")) box.checked = box.dataset.hasData === "1";
+  };
+
+  function editorParticipants() {
+    const boxes = [...$("dash-editor-participants").querySelectorAll(".options input")];
+    return boxes.filter((box) => box.checked).map((box) => box.value);
+  }
+
   function toggleTypeOptions() {
     const type = document.querySelector("input[name=dash-type]:checked").value;
     $("dash-opts-rolling").hidden = type !== "rolling";
@@ -387,14 +464,23 @@
     }
     const applets = checkedApplets();
     if (!applets.length) return setError("dash-editor-error", "Tick at least one applet.");
+    const scope = $("dash-scope").value;
+    let participants = null;
+    if (scope === "chosen") {
+      participants = editorParticipants();
+      if (!participants.length) {
+        return setError("dash-editor-error", "Fetch the participant list and tick at least one participant, or choose another option under “Participants to load”.");
+      }
+    }
     const body = {
       id: dash.editing ? dash.editing.id : undefined,
       name: $("dash-name").value.trim(),
       view: document.querySelector("input[name=dash-type]:checked").value,
       applets,
       entities: editorEntities(),
-      participants: dash.editing ? dash.editing.participants : null,
-      only_with_data: dash.editing ? Boolean(dash.editing.only_with_data) : false,
+      participants,
+      only_with_data: scope === "with_data",
+      use_history: $("dash-use-history").checked,
       start_rule: $("dash-start-rule").value,
       start_entity: $("dash-start-entity").value || null,
       study_days: Number($("dash-study-days").value) || 28,
@@ -447,7 +533,10 @@
     $("dash-search").value = "";
     $("dash-sort").value = "label";
     $("dash-entities-mode").value = dash.entityChoice ? "some" : "all";
-    $("dash-participants-mode").value = dash.participantChoice ? "some" : "all";
+    // A saved choice that covers everyone who was loaded is "All" as far as the view is concerned.
+    const loaded = ((dash.current.data && dash.current.data.participantList) || []).map((p) => p.key);
+    const narrows = dash.participantChoice && loaded.some((key) => !dash.participantChoice.includes(key));
+    $("dash-participants-mode").value = narrows ? "some" : "all";
     $("dash-only-with-data").checked = dash.onlyWithData;
     fillEntityChecklist();
     fillParticipantChecklist();
@@ -456,9 +545,9 @@
 
   // The chosen participants, activities, and the with-data switch are saved on the study.
   const CONFIG_FIELDS = [
-    "id", "name", "view", "applets", "entities", "participants", "only_with_data", "start_rule", "start_entity",
-    "study_days", "manual_starts", "aliases", "late_counts_as_done", "count_from_joined", "include_removed",
-    "data_from", "granularity", "created",
+    "id", "name", "view", "applets", "entities", "participants", "only_with_data", "use_history", "start_rule",
+    "start_entity", "study_days", "manual_starts", "aliases", "late_counts_as_done", "count_from_joined",
+    "include_removed", "data_from", "granularity", "created",
   ];
 
   async function persistChoices() {
@@ -490,6 +579,11 @@
       if (!participant.hasData) label.append(el("small", {}, " — no data"));
       if (participant.removed) label.append(el("small", {}, " — removed"));
       options.append(label);
+    }
+    if (dash.current.participants || dash.current.only_with_data) {
+      options.prepend(
+        el("div", { class: "fineprint" }, "Only the participants chosen under “Participants to load” were loaded; edit the study to load others."),
+      );
     }
     container.hidden = $("dash-participants-mode").value !== "some";
     bindChecklistSearch(container);

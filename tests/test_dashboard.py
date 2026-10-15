@@ -263,6 +263,114 @@ def test_saving_a_changed_applet_list_drops_the_loaded_data(make_client):
     assert not fewer["loaded"], "changing the applets needs a reload"
 
 
+# -- choosing participants before loading ------------------------------------------------------
+
+
+def requests_to(client: TestClient, suffix: str) -> list:
+    return [r for r in client.fake.requests if r.url.path.endswith(suffix)]
+
+
+def test_scan_lists_participants_with_submission_counts(make_client):
+    client = make_client()
+    body = {"applets": study_body()["applets"], "aliases": {"p002x": "P002"}}
+    scan = client.post("/api/dashboard/scan", json=body).json()
+    assert scan["submissionsKnown"]
+    people = {p["key"]: p for p in scan["participants"]}
+    assert set(people) == {"P001", "P002", "P003", "P004", "P005"}, "only people in the participant lists"
+    assert people["P001"]["submissions"] == 11 and people["P001"]["hasData"], (
+        "9 in EMA (assessment excluded) + 2 in Intake"
+    )
+    assert people["P002"]["submissions"] == 3 and people["P002"]["applets"] == ["EMA Study", "Intake"], (
+        "p002x merged in"
+    )
+    assert people["P005"]["submissions"] == 0 and people["P005"]["hasData"] is False
+    assert people["P004"]["removed"]
+    assert not requests_to(client, "/data"), "the scan never reads answers"
+    assert client.post("/api/dashboard/scan", json={"applets": []}).status_code == 400
+
+    old_backend = make_client(fake.FakeStudyServer(no_submissions_endpoint=True))
+    scan = old_backend.post("/api/dashboard/scan", json=body).json()
+    assert not scan["submissionsKnown"] and scan["participants"][0]["submissions"] is None
+
+
+def test_load_only_the_chosen_participants(make_client):
+    client = make_client()
+    study = create(client, participants=["P001", "P003"])
+    job = load(client, study["id"])
+    assert job["result"]["participants"] == 2 and job["result"]["completions"] == 12, "P001's 11 plus P003's evening"
+
+    status = client.get(f"/api/dashboard/studies/{study['id']}").json()
+    assert {p["key"] for p in status["data"]["participantList"]} == {"P001", "P003"}
+    exports = requests_to(client, "/data")
+    assert exports and all(r.url.params.get_list("targetSubjectIds") for r in exports), (
+        "answers are fetched per chosen subject"
+    )
+    assert {sid for r in exports for sid in r.url.params.get_list("targetSubjectIds")} == {fake.S1, fake.S3, fake.S1B}
+    individual = [r for r in requests_to(client, "/events") if r.url.params.get("respondentId")]
+    assert individual == [], "P002's individual schedule is not read; P002 was not chosen"
+    histories = requests_to(client, "/events/history")
+    assert histories and all(r.url.params.get_list("respondentIds") for r in histories)
+    assert set(histories[0].url.params.get_list("respondentIds")) == {fake.U1}, "P003 is a shell account"
+    grid = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert [row["label"] for row in grid["rows"]] == ["P001", "P003"]
+    assert cell(grid, "P001", col(day(-10), MORNING_KEY))["s"] == "done", (
+        "default events still come with the filtered history"
+    )
+
+
+def test_load_only_participants_with_data(make_client):
+    client = make_client()
+    study = create(client, only_with_data=True)
+    job = load(client, study["id"])
+    status = client.get(f"/api/dashboard/studies/{study['id']}").json()
+    keys = {p["key"] for p in status["data"]["participantList"]}
+    assert "P005" not in keys and "P004" not in keys and {"P001", "P002", "P003"} <= keys
+    # P009 was removed from the participant list, so their kept data is not loaded either: 16 - 1
+    assert job["result"]["completions"] == 15
+    submissions = requests_to(client, "/submissions")
+    assert submissions, "who has data comes from the cheap submission metadata"
+    ema_exports = [r for r in requests_to(client, "/data") if EMA in r.url.path]
+    intake_exports = [r for r in requests_to(client, "/data") if INTAKE in r.url.path]
+    assert ema_exports and all(r.url.params.get_list("targetSubjectIds") for r in ema_exports), (
+        "3 of the 5 EMA participants have data, so EMA is read per chosen subject"
+    )
+    assert intake_exports and not any(r.url.params.get_list("targetSubjectIds") for r in intake_exports), (
+        "both Intake participants have data, so Intake is read in one go"
+    )
+
+    old_backend = make_client(fake.FakeStudyServer(no_submissions_endpoint=True))
+    study = create(old_backend, only_with_data=True)
+    job = load(old_backend, study["id"])
+    assert any("could not be checked" in warning for warning in job["warnings"])
+    grid = view(old_backend, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert "P005" not in [row["label"] for row in grid["rows"]], "the view-time filter still hides them"
+
+
+def test_history_can_be_switched_off(make_client):
+    client = make_client()
+    study = create(client, use_history=False)
+    load(client, study["id"])
+    assert not requests_to(client, "/events/history")
+    grid = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert any("Schedule history not read" in note for note in grid["notes"])
+    assert cell(grid, "P001", col(day(-10), SLEEP_KEY)) is not None
+    assert cell(grid, "P001", col(day(-10), SLEEP_KEY))["s"] == "extra", (
+        "without history the deleted Sleep event is unknown"
+    )
+
+
+def test_an_unreadable_history_page_is_skipped(make_client, monkeypatch):
+    monkeypatch.setattr(loader, "HISTORY_PAGE_SIZE", 4)
+    monkeypatch.setattr(loader, "MIN_PAGE_SIZE", 1)
+    client = make_client(fake.FakeStudyServer(poison_history_row=6))
+    study = create(client)
+    job = load(client, study["id"])
+    assert job["status"] == "done"
+    assert any("rows 7–7 could not be read" in warning and "skipped" in warning for warning in job["warnings"])
+    grid = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert cell(grid, "P001", col(day(-10), MORNING_KEY))["s"] == "done", "the rest of the history was used"
+
+
 # -- fixed view ----------------------------------------------------------------------------------
 
 

@@ -469,3 +469,7 @@ table.dash-grid tfoot td.cell:hover { outline: none; }
 
 .dash-export { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 4px; }
 .dash-export .output-row button.primary { white-space: nowrap; }
+
+#dash-editor-participants-block { margin-top: 8px; }
+.dash-scan-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.dash-scan-row button { padding: 6px 12px; font-size: 13px; }

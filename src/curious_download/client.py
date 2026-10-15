@@ -251,9 +251,17 @@ class CuriousClient:
         params = {"respondentId": respondent_id} if respondent_id else None
         return self._get(f"/applets/{applet_id}/events", params)["result"]
 
-    def applet_events_history_page(self, applet_id: str, *, page: int, limit: int) -> dict:
-        """One page of every saved version of every event: {"result": [...], "count": n}. Owner or manager."""
-        return self._get(f"/applets/{applet_id}/events/history", {"page": page, "limit": limit})
+    def applet_events_history_page(
+        self, applet_id: str, *, page: int, limit: int, respondent_ids: Sequence[str] = ()
+    ) -> dict:
+        """One page of every saved version of every event: {"result": [...], "count": n}. Owner or manager.
+
+        With `respondent_ids` (account ids), only those people's individual events are included, plus
+        every default event (the backend treats a null respondent as matching).
+        """
+        params: list[tuple[str, str | int]] = [("page", page), ("limit", limit)]
+        params += [("respondentIds", user_id) for user_id in respondent_ids]
+        return self._get(f"/applets/{applet_id}/events/history", params)
 
     def participants(self, owner_id: str, applet_id: str) -> list[Participant]:
         rows = self.applet_respondents(owner_id, applet_id)

@@ -236,7 +236,15 @@ next one and says so in the row.
 
 Loading reads participants, the schedule history, and completions in pages (1,000 completions per
 request; the admin panel uses 250). If the server refuses a page with an error, the page size is
-halved and the load goes on; a request that still fails is named in the error message.
+halved and the load goes on; rows the server cannot return even ten at a time are skipped with a
+warning, and a request that fails for another reason is named in the error message.
+
+**Large studies.** With thousands of participants, choose who to load under **Participants to
+load** in the study editor: everyone, only participants who have submitted data (found from the
+submission metadata before any answer is read), or a list you pick after **Fetch the participant
+list**, which shows each person's submission count. Completions, individual schedules, and the
+schedule history are then read only for those people. **Read the schedule history** can be switched
+off in *Rules and matching* when it is too slow; the current schedule is then assumed throughout.
 
 Participants are matched across applets by secret ID; the *aliases* rule maps IDs that belong to
 the same person. Reviewer assessments, hidden and reviewer-only activities, and activities that

@@ -458,9 +458,10 @@ def _common_notes(data: StudyData) -> list[str]:
     ]
     if missing_history:
         notes.append(
-            "Schedule history not available for "
+            "Schedule history not read for "
             + ", ".join(missing_history)
-            + ": the current schedule is assumed for the whole period (changes made along the way are not reflected)."
+            + " (not available, or switched off in the study): the current schedule is assumed for the whole "
+            "period, so changes made along the way are not reflected."
         )
     return notes
 

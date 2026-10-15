@@ -135,7 +135,15 @@ def _history_row(
 
 
 class FakeStudyServer:
-    def __init__(self, *, intake_events_forbidden: bool = True, max_page: int | None = None, fail_events: bool = False):
+    def __init__(
+        self,
+        *,
+        intake_events_forbidden: bool = True,
+        max_page: int | None = None,
+        fail_events: bool = False,
+        poison_history_row: int | None = None,
+        no_submissions_endpoint: bool = False,
+    ):
         self.requests: list[httpx.Request] = []
         self._tokens: set[str] = set()
         self._counter = 0
@@ -144,6 +152,10 @@ class FakeStudyServer:
         self.max_page = max_page
         # Simulate the default-schedule endpoint failing.
         self.fail_events = fail_events
+        # Like the real server that cannot serialise one history row: any page holding it answers 500.
+        self.poison_history_row = poison_history_row
+        # Older backends have no /submissions endpoint.
+        self.no_submissions_endpoint = no_submissions_endpoint
 
         start, end = day(-10), day(5)
         self.events = {
@@ -418,9 +430,41 @@ class FakeStudyServer:
             if path == f"/applets/{applet_id}/events/history":
                 if applet_id == INTAKE:
                     return httpx.Response(404, json={"detail": "Not Found"})
+                rows = self.history
+                if respondents := params.get("respondentIds"):
+                    rows = [r for r in rows if r["userId"] is None or r["userId"] in respondents]
                 page, limit = int(params.get("page", ["1"])[0]), int(params.get("limit", ["10000"])[0])
-                chunk = self.history[(page - 1) * limit : page * limit]
-                return httpx.Response(200, json={"result": copy.deepcopy(chunk), "count": len(self.history)})
+                start_index, end_index = (page - 1) * limit, page * limit
+                if self.poison_history_row is not None and start_index <= self.poison_history_row < min(
+                    end_index, len(rows)
+                ):
+                    return httpx.Response(500, json={"detail": "Internal Server Error"})
+                chunk = rows[start_index:end_index]
+                return httpx.Response(200, json={"result": copy.deepcopy(chunk), "count": len(rows)})
+            if path == f"/answers/applet/{applet_id}/submissions":
+                if self.no_submissions_endpoint:
+                    return httpx.Response(404, json={"detail": "Not Found"})
+                rows = self.answers[applet_id]
+                if start := params.get("fromDate"):
+                    rows = [r for r in rows if r["createdAt"] >= start[0]]
+                page, limit = int(params.get("page", ["1"])[0]), int(params.get("limit", ["10000"])[0])
+                chunk = rows[(page - 1) * limit : page * limit]
+                submissions = [
+                    {
+                        "appletId": applet_id,
+                        "respondentSubjectId": r["respondentId"],
+                        "targetSubjectId": r["targetSubjectId"],
+                        "sourceSubjectId": r["sourceSubjectId"],
+                        "activityId": r["activityId"],
+                        "activityName": "x",
+                        "createdAt": r["createdAt"],
+                        "updatedAt": r["createdAt"],
+                    }
+                    for r in chunk
+                ]
+                return httpx.Response(
+                    200, json={"submissions": submissions, "submissionsCount": len(rows), "participantsCount": 0}
+                )
             if path == f"/applets/{applet_id}/events":
                 if self.fail_events and not params.get("respondentId"):
                     return httpx.Response(500, json={"detail": "Internal Server Error"})
@@ -431,6 +475,8 @@ class FakeStudyServer:
                 return httpx.Response(200, json={"result": copy.deepcopy(rows), "count": len(rows)})
             if path == f"/answers/applet/{applet_id}/data":
                 rows = self.answers[applet_id]
+                if subjects := params.get("targetSubjectIds"):
+                    rows = [r for r in rows if r["targetSubjectId"] in subjects]
                 if start := params.get("fromDate"):
                     rows = [r for r in rows if r["createdAt"] >= start[0]]
                 page, limit = int(params.get("page", ["1"])[0]), int(params.get("limit", ["10000"])[0])
