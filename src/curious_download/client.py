@@ -34,7 +34,15 @@ def _error_message(response: httpx.Response) -> str:
     try:
         body = response.json()
     except ValueError:
-        return response.text[:200] or response.reason_phrase
+        text = response.text.strip()
+        if text[:15].lower().startswith("<!doctype") or "<html" in text[:300].lower():
+            # Not the backend's JSON but an error page from a proxy or security filter in front of it,
+            # which typically happens when it refuses the request itself (for example a long URL).
+            return (
+                f"a proxy or security filter in front of the server refused the request "
+                f"({response.reason_phrase or response.status_code}) and answered with an HTML error page"
+            )
+        return text[:200] or response.reason_phrase
     result = body.get("result") if isinstance(body, dict) else None
     if isinstance(result, list) and result and isinstance(result[0], dict):
         return "; ".join(str(err.get("message", err)) for err in result)

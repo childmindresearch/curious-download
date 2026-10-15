@@ -36,6 +36,11 @@ EV_MORNING, EV_EVENING, EV_FLOW, EV_RATING, EV_SLEEP_OLD, EV_MORNING_P2, EV_BASE
 U1, U2, U5, U8, MANAGER = (f"u{n}u{n}u{n}u{n}-0000-4000-8000-00000000000{n}" for n in (1, 2, 5, 8, 9))
 S1, S2, S3, S4, S9, S1B, S2B, S8 = (f"s{n}s{n}s{n}s{n}-0000-4000-8000-00000000000{n}" for n in (1, 2, 3, 4, 9, 6, 7, 8))
 
+FIREWALL_PAGE = (
+    '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">\n'
+    "<HTML><HEAD><TITLE>ERROR: The request could not be satisfied</TITLE></HEAD><BODY>403</BODY></HTML>"
+)
+
 TODAY = datetime.now().astimezone().date()
 TZ = host_tz_offset_minutes()
 
@@ -143,6 +148,7 @@ class FakeStudyServer:
         fail_events: bool = False,
         poison_history_row: int | None = None,
         no_submissions_endpoint: bool = False,
+        max_query_ids: int | None = None,
     ):
         self.requests: list[httpx.Request] = []
         self._tokens: set[str] = set()
@@ -156,6 +162,8 @@ class FakeStudyServer:
         self.poison_history_row = poison_history_row
         # Older backends have no /submissions endpoint.
         self.no_submissions_endpoint = no_submissions_endpoint
+        # Like a firewall in front of the server: more ids than this in the URL gets an HTML 403 page.
+        self.max_query_ids = max_query_ids
 
         start, end = day(-10), day(5)
         self.events = {
@@ -406,6 +414,9 @@ class FakeStudyServer:
         if request.headers.get("Authorization", "").removeprefix("Bearer ") not in self._tokens:
             return httpx.Response(401, json={"result": [{"message": "Not authenticated"}]})
 
+        ids_in_url = len(params.get("targetSubjectIds", [])) + len(params.get("respondentIds", []))
+        if self.max_query_ids is not None and ids_in_url > self.max_query_ids:
+            return httpx.Response(403, text=FIREWALL_PAGE, headers={"content-type": "text/html"})
         too_big = self.max_page and int(params.get("limit", ["10000"])[0]) > self.max_page
         if too_big and path.endswith(("/respondents", "/events/history", "/data")):
             return httpx.Response(500, json={"detail": "Internal Server Error"})

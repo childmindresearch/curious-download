@@ -243,7 +243,8 @@ warning, and a request that fails for another reason is named in the error messa
 load** in the study editor: everyone, only participants who have submitted data (found from the
 submission metadata before any answer is read), or a list you pick after **Fetch the participant
 list**, which shows each person's submission count. Completions, individual schedules, and the
-schedule history are then read only for those people. **Read the schedule history** can be switched
+schedule history are then read only for those people, a few participants per request; a request
+that a proxy or firewall in front of the server refuses (an HTML 403 page) is split and retried. **Read the schedule history** can be switched
 off in *Rules and matching* when it is too slow; the current schedule is then assumed throughout.
 
 Participants are matched across applets by secret ID; the *aliases* rule maps IDs that belong to

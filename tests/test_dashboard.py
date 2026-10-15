@@ -348,6 +348,38 @@ def test_load_only_participants_with_data(make_client):
     assert "P005" not in [row["label"] for row in grid["rows"]], "the view-time filter still hides them"
 
 
+def test_requests_with_too_many_ids_are_split(make_client, monkeypatch):
+    """A firewall in front of the real server refused filtered reads with 40 ids in the URL (HTML 403)."""
+    monkeypatch.setattr(loader, "ID_CHUNK", 3)
+    client = make_client(fake.FakeStudyServer(max_query_ids=1))
+    study = create(client, participants=["P001", "P002", "P003"])
+    job = load(client, study["id"])
+    assert job["result"]["participants"] == 3 and job["result"]["completions"] == 15
+    # The history is read before the completions, so it is the first filtered request that is refused;
+    # the size that then worked (one id) is kept for every later request of the load.
+    filtered = [
+        len(r.url.params.get_list("respondentIds")) + len(r.url.params.get_list("targetSubjectIds"))
+        for r in client.fake.requests
+        if r.url.params.get_list("respondentIds") or r.url.params.get_list("targetSubjectIds")
+    ]
+    # Only P001 and P002 have accounts, so the first history request carries two ids.
+    assert filtered[0] == 2 and all(size == 1 for size in filtered[1:]), "refused with 2 ids, then one id per request"
+    grid = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert [row["label"] for row in grid["rows"]] == ["P001", "P002", "P003"]
+
+
+def test_html_error_pages_are_summarised(make_client):
+    from curious_download.client import ApiError, CuriousClient
+
+    server = fake.FakeStudyServer(max_query_ids=0)
+    api = CuriousClient("https://api.curious.test", transport=server.transport())
+    api.login(fake.EMAIL, fake.PASSWORD)
+    with pytest.raises(ApiError) as caught:
+        api.export_page(fake.EMA, page=1, limit=10, target_subject_ids=[fake.S1])
+    assert caught.value.status_code == 403
+    assert "proxy or security filter" in caught.value.message and "<HTML>" not in caught.value.message
+
+
 def test_history_can_be_switched_off(make_client):
     client = make_client()
     study = create(client, use_history=False)

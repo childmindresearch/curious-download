@@ -3,6 +3,7 @@ and completion metadata. Answers are never decrypted; the encrypted content is d
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -22,8 +23,12 @@ SUBMISSIONS_PAGE_SIZE = 10000
 MIN_PAGE_SIZE = 10
 MAX_SKIPPED_PAGES = 20
 SERVER_ERRORS = {500, 502, 503, 504}
-# Ids per filtered request (they travel in the URL).
-ID_CHUNK = 40
+# Ids per filtered request. They travel in the URL, and security filters in front of the server
+# commonly refuse query strings over 2,048 bytes (about 36 ids); a refused request is split further.
+ID_CHUNK = 25
+MIN_CHUNK = 1
+# Answers a proxy or firewall gives to a request it does not like, as opposed to the backend's own JSON errors.
+REFUSED_REQUEST = {403, 413, 414}
 # Below this share of participants a chosen subset is fetched with per-participant filters;
 # above it, reading everything is fewer requests.
 FILTER_BELOW = 0.8
@@ -80,6 +85,8 @@ class StudyLoader:
         self._subject_to_participant: dict[str, str] = {}
         # Page sizes the server has accepted so far, per kind of request; a refused page halves it.
         self._page_sizes: dict[str, int] = {}
+        # Ids per filtered request the server has accepted so far; a refused request halves it.
+        self._chunk = ID_CHUNK
 
     # -- identity -------------------------------------------------------------------
 
@@ -202,7 +209,35 @@ class StudyLoader:
                 self._subject_to_participant.pop(subject_id, None)
 
     def _chunks(self, ids: list[str]) -> list[list[str]]:
-        return [ids[i : i + ID_CHUNK] for i in range(0, len(ids), ID_CHUNK)]
+        return [ids[i : i + self._chunk] for i in range(0, len(ids), self._chunk)]
+
+    def _in_batches(self, doing: str, ids: list[str], run) -> None:
+        """Call `run(batch)` for the ids in batches small enough for the server.
+
+        Filters travel in the URL, and a proxy or firewall in front of the server may refuse a long
+        one with a 403 or 414 page. Such a batch is split in two and retried, and the smaller size
+        is kept for the rest of the load. A single id that is still refused is a real error.
+        """
+        queue = deque(self._chunks(ids))
+        while queue:
+            batch = queue.popleft()
+            if len(batch) > self._chunk:
+                queue.extendleft(reversed(self._chunks(batch)))
+                continue
+            try:
+                run(batch)
+            except ApiError as e:
+                if e.status_code in REFUSED_REQUEST and len(batch) > MIN_CHUNK:
+                    half = max(MIN_CHUNK, len(batch) // 2)
+                    self._chunk = min(self._chunk, half)
+                    self.progress(
+                        detail=f"{doing}: the server refused a request with {len(batch)} participant filters "
+                        f"(HTTP {e.status_code}); retrying with {half}"
+                    )
+                    queue.appendleft(batch[half:])
+                    queue.appendleft(batch[:half])
+                    continue
+                raise
 
     def _load_applet(self, owner_id: str, applet_id: str) -> dict:
         try:
@@ -378,28 +413,34 @@ class StudyLoader:
         """Every event version, or with a selection only the chosen people's (plus the default events)."""
         rows: list[dict] = []
         seen: set[tuple[str, str]] = set()
-        if selected is None:
-            batches: list[list[str]] = [[]]
-        else:
-            accounts = self._accounts_for(applet_id, selected)
-            batches = self._chunks(accounts) or [[NOBODY]]
+        doing = f"reading the schedule history of {applet_name}"
+
+        def read(batch: list[str]) -> None:
+            for chunk, fetched, total in self._paged(
+                doing,
+                lambda page, limit: self.client.applet_events_history_page(
+                    applet_id, page=page, limit=limit, respondent_ids=batch
+                ),
+                kind="history",
+                page_size=HISTORY_PAGE_SIZE,
+            ):
+                for row in chunk:
+                    key = (str(row.get("eventId")), str(row.get("eventVersion")))
+                    if key not in seen:
+                        seen.add(key)
+                        rows.append(row)
+                where = f"{len(batch)} participants, " if batch and batch != [NOBODY] else ""
+                self.progress(detail=f"schedule history: {where}{fetched:,} of {total:,} event versions")
+
         try:
-            for number, batch in enumerate(batches, start=1):
-                for chunk, fetched, total in self._paged(
-                    f"reading the schedule history of {applet_name}",
-                    lambda page, limit, batch=batch: self.client.applet_events_history_page(
-                        applet_id, page=page, limit=limit, respondent_ids=batch
-                    ),
-                    kind="history",
-                    page_size=HISTORY_PAGE_SIZE,
-                ):
-                    for row in chunk:
-                        key = (str(row.get("eventId")), str(row.get("eventVersion")))
-                        if key not in seen:
-                            seen.add(key)
-                            rows.append(row)
-                    where = f"batch {number} of {len(batches)}, " if len(batches) > 1 else ""
-                    self.progress(detail=f"schedule history: {where}{fetched:,} of {total:,} event versions")
+            if selected is None:
+                read([])
+            else:
+                accounts = self._accounts_for(applet_id, selected)
+                if accounts:
+                    self._in_batches(doing, accounts, read)
+                else:
+                    read([NOBODY])
         except ApiError as e:
             if e.status_code not in (403, 404):
                 raise
@@ -431,14 +472,12 @@ class StudyLoader:
         from_date = _api_day(self.config.data_from)
         subjects = self._subjects_for(applet_id, selected)
         in_applet = sum(1 for p in self.data.participants.values() if applet_id in p.subject_ids)
-        if subjects is not None and in_applet and len(subjects) < FILTER_BELOW * in_applet:
-            batches = self._chunks(sorted(subjects))
-        else:
-            batches = [[]]  # everyone, unfiltered
-        if not batches:
-            return
+        doing = f"reading the completions of {applet_name}"
+        done_subjects = 0
 
-        def make_fetch(batch: list[str]):
+        def read(batch: list[str]) -> None:
+            nonlocal done_subjects
+
             def fetch(page: int, limit: int) -> dict:
                 body = self.client.export_page(
                     applet_id, page=page, limit=limit, target_subject_ids=batch, from_date=from_date
@@ -448,15 +487,7 @@ class StudyLoader:
                     self._register_deleted_activity(applet_id, applet_name, definition)
                 return {"result": (body.get("result") or {}).get("answers") or [], "count": body.get("count") or 0}
 
-            return fetch
-
-        for number, batch in enumerate(batches, start=1):
-            for chunk, fetched, total in self._paged(
-                f"reading the completions of {applet_name}",
-                make_fetch(batch),
-                kind="completions",
-                page_size=EXPORT_PAGE_SIZE,
-            ):
+            for chunk, fetched, total in self._paged(doing, fetch, kind="completions", page_size=EXPORT_PAGE_SIZE):
                 for answer in chunk:
                     if answer.get("id") in seen:
                         continue
@@ -464,14 +495,21 @@ class StudyLoader:
                     completion = self._completion(applet_id, answer)
                     if completion:
                         self.data.completions.append(completion)
-                if len(batches) > 1:
+                if batch:
                     self.progress(
-                        done=number,
-                        total=len(batches),
-                        detail=f"participants {(number - 1) * ID_CHUNK + 1}–{min(number * ID_CHUNK, len(subjects or []))} of {len(subjects or [])}: {fetched:,} completions",
+                        done=done_subjects + len(batch),
+                        total=len(subjects or []),
+                        detail=f"participants {done_subjects + 1}–{done_subjects + len(batch)} of {len(subjects or [])}: {fetched:,} completions",
                     )
                 else:
                     self.progress(done=min(fetched, total) if total else fetched, total=total or None)
+            done_subjects += len(batch)
+
+        if subjects is not None and in_applet and len(subjects) < FILTER_BELOW * in_applet:
+            if subjects:
+                self._in_batches(doing, sorted(subjects), read)
+        else:
+            read([])  # everyone, unfiltered
 
     def _register_deleted_activity(self, applet_id: str, applet_name: str, definition: dict) -> None:
         activity_id = definition.get("id") or str(definition.get("idVersion") or "")[:36]
