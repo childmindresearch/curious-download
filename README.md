@@ -234,6 +234,10 @@ next one and says so in the row.
    closed. Curious keeps unfinished activities on the phone only, so a half-finished questionnaire
    is invisible to the server; "partly done" therefore exists for flows alone.
 
+Loading reads participants, the schedule history, and completions in pages (1,000 completions per
+request; the admin panel uses 250). If the server refuses a page with an error, the page size is
+halved and the load goes on; a request that still fails is named in the error message.
+
 Participants are matched across applets by secret ID; the *aliases* rule maps IDs that belong to
 the same person. Reviewer assessments, hidden and reviewer-only activities, and activities that
 only exist inside a flow are left out. Participants removed from an applet are hidden unless you

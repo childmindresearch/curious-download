@@ -492,7 +492,12 @@ function renderJob(job) {
     }
   }
 
-  if (job.status === "failed") card.append(el("div", { class: "job-error" }, job.error || "Failed."));
+  if (job.status === "failed") {
+    if (job.stage && job.stage !== "Starting") {
+      card.append(el("div", { class: "job-stage" }, `Failed while: ${job.stage}${job.detail ? ` — ${job.detail}` : ""}`));
+    }
+    card.append(el("div", { class: "job-error" }, job.error || "Failed."));
+  }
   if (job.status === "cancelled") card.append(el("div", { class: "job-stage" }, "Cancelled."));
 
   if (job.status === "done" && job.result) {

@@ -135,11 +135,15 @@ def _history_row(
 
 
 class FakeStudyServer:
-    def __init__(self, *, intake_events_forbidden: bool = True):
+    def __init__(self, *, intake_events_forbidden: bool = True, max_page: int | None = None, fail_events: bool = False):
         self.requests: list[httpx.Request] = []
         self._tokens: set[str] = set()
         self._counter = 0
         self.intake_events_forbidden = intake_events_forbidden
+        # Like a server that chokes on big pages: list endpoints answer 500 when limit exceeds this.
+        self.max_page = max_page
+        # Simulate the default-schedule endpoint failing.
+        self.fail_events = fail_events
 
         start, end = day(-10), day(5)
         self.events = {
@@ -383,6 +387,10 @@ class FakeStudyServer:
         if request.headers.get("Authorization", "").removeprefix("Bearer ") not in self._tokens:
             return httpx.Response(401, json={"result": [{"message": "Not authenticated"}]})
 
+        too_big = self.max_page and int(params.get("limit", ["10000"])[0]) > self.max_page
+        if too_big and path.endswith(("/respondents", "/events/history", "/data")):
+            return httpx.Response(500, json={"detail": "Internal Server Error"})
+
         if path == "/workspaces":
             return httpx.Response(200, json={"result": [{"ownerId": OWNER_ID, "workspaceName": "Lab"}], "count": 1})
         if path == f"/workspaces/{OWNER_ID}/applets":
@@ -397,7 +405,9 @@ class FakeStudyServer:
                 return httpx.Response(200, json={"result": self.applet_detail(applet_id)})
             if path == f"/workspaces/{OWNER_ID}/applets/{applet_id}/respondents":
                 rows = self.respondents(applet_id)
-                return httpx.Response(200, json={"result": rows, "count": len(rows)})
+                page, limit = int(params.get("page", ["1"])[0]), int(params.get("limit", ["10000"])[0])
+                chunk = rows[(page - 1) * limit : page * limit]
+                return httpx.Response(200, json={"result": chunk, "count": len(rows)})
             if path == f"/applets/{applet_id}/events/history":
                 if applet_id == INTAKE:
                     return httpx.Response(404, json={"detail": "Not Found"})
@@ -405,6 +415,8 @@ class FakeStudyServer:
                 chunk = self.history[(page - 1) * limit : page * limit]
                 return httpx.Response(200, json={"result": copy.deepcopy(chunk), "count": len(self.history)})
             if path == f"/applets/{applet_id}/events":
+                if self.fail_events and not params.get("respondentId"):
+                    return httpx.Response(500, json={"detail": "Internal Server Error"})
                 if applet_id == INTAKE and self.intake_events_forbidden:
                     return httpx.Response(403, json={"result": [{"message": "Access denied"}]})
                 respondent = params.get("respondentId", [None])[0]

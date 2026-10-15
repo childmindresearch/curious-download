@@ -222,14 +222,28 @@ class CuriousClient:
         """
         return self._get(f"/applets/{applet_id}/versions/{version}")["result"]
 
-    def applet_respondents(self, owner_id: str, applet_id: str) -> list[dict]:
-        """The admin panel's Participants rows: [{id (account), status, lastSeen, details: [...]}].
+    def applet_respondents_page(self, owner_id: str, applet_id: str, *, page: int, limit: int) -> dict:
+        """One page of the admin panel's Participants rows: {"result": [...], "count": n}.
 
-        Each detail is one subject in one applet: subjectId, respondentSecretId, respondentNickname,
-        subjectTag, subjectCreatedAt, hasIndividualSchedule, subjectIsDeleted, invitation, roles.
-        Owner, manager, coordinator, or reviewer.
+        Each row is one account: {id, status, lastSeen, details: [...]}; each detail is one subject in
+        one applet: subjectId, respondentSecretId, respondentNickname, subjectTag, subjectCreatedAt,
+        hasIndividualSchedule, subjectIsDeleted, invitation, roles. Owner, manager, coordinator, or reviewer.
         """
-        return self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", {"limit": 10000})["result"]
+        params = {"page": page, "limit": limit}
+        return self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", params)
+
+    def applet_respondents(self, owner_id: str, applet_id: str, *, page_size: int = 1000) -> list[dict]:
+        """Every Participants row of an applet (see `applet_respondents_page`), read page by page."""
+        rows: list[dict] = []
+        page = 1
+        while True:
+            body = self.applet_respondents_page(owner_id, applet_id, page=page, limit=page_size)
+            chunk = body.get("result") or []
+            rows.extend(chunk)
+            total = int(body.get("count") or 0)
+            if not chunk or len(rows) >= total:
+                return rows
+            page += 1
 
     def applet_events(self, applet_id: str, respondent_id: str | None = None) -> list[dict]:
         """Schedule events: the default schedule, or with `respondent_id` (an account id) that

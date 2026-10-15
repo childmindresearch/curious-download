@@ -211,6 +211,40 @@ def test_history_is_read_page_by_page(make_client, monkeypatch):
     assert cell(grid, "P001", col(day(-7), SLEEP_KEY))["s"] == "none"
 
 
+def test_bulk_reads_are_paged_and_shrink_when_the_server_refuses_a_page(make_client, monkeypatch):
+    """A big applet made the real server answer 500 to large pages; the loader must recover."""
+    monkeypatch.setattr(loader, "RESPONDENTS_PAGE_SIZE", 4)
+    monkeypatch.setattr(loader, "HISTORY_PAGE_SIZE", 8)
+    monkeypatch.setattr(loader, "EXPORT_PAGE_SIZE", 8)
+    monkeypatch.setattr(loader, "MIN_PAGE_SIZE", 1)
+    client = make_client(fake.FakeStudyServer(max_page=2))
+    study = create(client)
+    job = load(client, study["id"])
+    assert job["result"]["participants"] == 5 and job["result"]["completions"] == 16, "nothing lost or doubled"
+
+    def limits(suffix: str) -> list[int]:
+        return [int(r.url.params["limit"]) for r in client.fake.requests if r.url.path.endswith(suffix)]
+
+    assert limits("/data")[:4] == [8, 4, 2, 2], "halved until the server accepted it, then kept"
+    assert limits("/respondents")[:3] == [4, 2, 2]
+    assert limits("/events/history")[:3] == [8, 4, 2]
+    # After the halving steps, every later request (including the second applet's) keeps the accepted size.
+    assert all(limit <= 2 for limit in limits("/data")[2:] + limits("/respondents")[1:] + limits("/events/history")[2:])
+    # The grid is the same as with big pages.
+    grid = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert cell(grid, "P001", col(day(-10), MORNING_KEY))["s"] == "done"
+
+
+def test_a_failed_request_is_named(make_client):
+    client = make_client(fake.FakeStudyServer(fail_events=True))
+    study = create(client)
+    started = client.post(f"/api/dashboard/studies/{study['id']}/load")
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "failed"
+    assert "while reading the default schedule of EMA Study" in job["error"] and "HTTP 500" in job["error"]
+    assert "schedule" in job["stage"].lower(), "the stage tells where it was"
+
+
 def test_data_from_limits_what_is_fetched(make_client):
     client = make_client()
     study = loaded_study(client, data_from=day(-8).isoformat())

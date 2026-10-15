@@ -200,7 +200,8 @@
         await loadStudies(dash.current && dash.current.id);
       } else {
         $("dash-error").className = "error";
-        setError("dash-error", job.status === "cancelled" ? "Loading was cancelled." : job.error || "Loading failed.");
+        const where = job.stage && job.stage !== "Starting" ? ` (while: ${job.stage}${job.detail ? ` — ${job.detail}` : ""})` : "";
+        setError("dash-error", job.status === "cancelled" ? "Loading was cancelled." : `${job.error || "Loading failed."}${where}`);
       }
       refreshJobs();
     };

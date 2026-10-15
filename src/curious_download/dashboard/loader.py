@@ -12,8 +12,14 @@ from .config import StudyConfig
 from .model import Completion, Entity, Participant, StudyData
 from .schedule import bound_current_rules, entity_key, rule_from_event, rules_from_history
 
-EXPORT_PAGE_SIZE = 10000  # the backend's maximum; rows are small once the ciphertext is dropped
-HISTORY_PAGE_SIZE = 10000
+# Page sizes for the bulk reads. Each export row carries its encrypted answer, so very large pages
+# have made the server fail on big applets; when a page is refused with a server error the loader
+# halves the page size and tries again, down to MIN_PAGE_SIZE.
+EXPORT_PAGE_SIZE = 1000
+HISTORY_PAGE_SIZE = 2000
+RESPONDENTS_PAGE_SIZE = 1000
+MIN_PAGE_SIZE = 100
+SERVER_ERRORS = {500, 502, 503, 504}
 
 # Called like Job.progress: progress(stage=None, done=None, total=None, detail=None).
 Progress = Callable[..., None]
@@ -43,6 +49,11 @@ def _local(value: Any, tz_offset: int) -> datetime | None:
     return moment + timedelta(minutes=tz_offset) if moment else None
 
 
+def _with_context(error: ApiError, doing: str) -> ApiError:
+    """The same error, saying which request failed (the job shows only the message)."""
+    return ApiError(error.status_code, f"{error.message} — while {doing}")
+
+
 def _api_day(text: str | None) -> str | None:
     if not text:
         return None
@@ -58,6 +69,8 @@ class StudyLoader:
             study_id=config.id, server=config.server, loaded_at=datetime.now(UTC).replace(tzinfo=None)
         )
         self._subject_to_participant: dict[str, str] = {}
+        # Page sizes the server has accepted so far, per kind of request; a refused page halves it.
+        self._page_sizes: dict[str, int] = {}
 
     # -- identity -------------------------------------------------------------------
 
@@ -94,7 +107,10 @@ class StudyLoader:
         return self.data
 
     def _load_applet(self, owner_id: str, applet_id: str) -> dict:
-        details = self.client.applet(applet_id)
+        try:
+            details = self.client.applet(applet_id)
+        except ApiError as e:
+            raise _with_context(e, f"reading applet {applet_id}") from e
         applet_name = details.get("displayName") or applet_id
         self.data.applets[applet_id] = {
             "id": applet_id,
@@ -133,9 +149,43 @@ class StudyLoader:
             )
         return details
 
+    def _paged(self, doing: str, fetch, *, kind: str, page_size: int, result_key: str = "result"):
+        """Read every page of a list endpoint, halving the page size when the server refuses one.
+
+        `fetch(page, limit)` returns the response body. Rows come back in order; a page refused with
+        a server error is retried with a smaller page (pages stay aligned because each new size
+        divides the old one), and the size that worked is kept for the rest of the load.
+        """
+        rows: list[dict] = []
+        limit = self._page_sizes.setdefault(kind, page_size)
+        while True:
+            page = len(rows) // limit + 1
+            try:
+                body = fetch(page, limit)
+            except ApiError as e:
+                if e.status_code in SERVER_ERRORS and limit > MIN_PAGE_SIZE:
+                    limit = self._page_sizes[kind] = max(MIN_PAGE_SIZE, limit // 2)
+                    self.progress(detail=f"{doing}: the server refused a page; retrying with {limit} per page")
+                    continue
+                raise _with_context(e, f"{doing} (page {page}, {limit} per page)") from e
+            chunk = body.get(result_key) or []
+            rows.extend(chunk)
+            total = int(body.get("count") or 0)
+            yield chunk, len(rows), total
+            if not chunk or len(rows) >= total:
+                return
+
     def _load_participants(self, owner_id: str, applet_id: str, applet_name: str) -> None:
+        rows: list[dict] = []
         try:
-            rows = self.client.applet_respondents(owner_id, applet_id)
+            for chunk, fetched, total in self._paged(
+                f"reading the participants of {applet_name}",
+                lambda page, limit: self.client.applet_respondents_page(owner_id, applet_id, page=page, limit=limit),
+                kind="respondents",
+                page_size=RESPONDENTS_PAGE_SIZE,
+            ):
+                rows.extend(chunk)
+                self.progress(detail=f"participants: {fetched:,} of {total:,}")
         except ApiError as e:
             if e.status_code != 403:
                 raise
@@ -170,7 +220,7 @@ class StudyLoader:
             self.data.schedule_available[applet_id] = True
         except ApiError as e:
             if e.status_code not in (403, 404):
-                raise
+                raise _with_context(e, f"reading the default schedule of {applet_name}") from e
             self.data.schedule_available[applet_id] = False
             self.data.warnings.append(
                 f"{applet_name}: the schedule could not be read ({e.message}); every activity is treated as "
@@ -188,10 +238,11 @@ class StudyLoader:
             try:
                 events = self.client.applet_events(applet_id, respondent_id=user_id)
             except ApiError as e:
-                if e.status_code not in (400, 403, 404):
-                    raise
+                if e.status_code not in (400, 403, 404, *SERVER_ERRORS):
+                    raise _with_context(e, f"reading the individual schedule of {participant.secret_id}") from e
                 self.data.warnings.append(
-                    f"{applet_name}: individual schedule of {participant.secret_id} not readable ({e.message})."
+                    f"{applet_name}: individual schedule of {participant.secret_id} not readable ({e.message}); "
+                    "the default schedule is assumed for them."
                 )
                 continue
             for event in events:
@@ -204,17 +255,15 @@ class StudyLoader:
 
     def _load_history(self, applet_id: str, applet_name: str) -> list | None:
         rows: list[dict] = []
-        page = 1
         try:
-            while True:
-                self.progress(detail=f"schedule history, page {page}")
-                body = self.client.applet_events_history_page(applet_id, page=page, limit=HISTORY_PAGE_SIZE)
-                chunk = body.get("result") or []
+            for chunk, fetched, total in self._paged(
+                f"reading the schedule history of {applet_name}",
+                lambda page, limit: self.client.applet_events_history_page(applet_id, page=page, limit=limit),
+                kind="history",
+                page_size=HISTORY_PAGE_SIZE,
+            ):
                 rows.extend(chunk)
-                total = int(body.get("count") or 0)
-                if not chunk or page * HISTORY_PAGE_SIZE >= total:
-                    break
-                page += 1
+                self.progress(detail=f"schedule history: {fetched:,} of {total:,} event versions")
         except ApiError as e:
             if e.status_code not in (403, 404):
                 raise
@@ -242,29 +291,27 @@ class StudyLoader:
         return rules_from_history(applet_id, rows)
 
     def _load_completions(self, applet_id: str, applet_name: str) -> None:
-        page = 1
-        fetched = 0
         seen: set[str] = set()
         from_date = _api_day(self.config.data_from)
-        while True:
-            body = self.client.export_page(applet_id, page=page, limit=EXPORT_PAGE_SIZE, from_date=from_date)
-            result = body.get("result") or {}
-            total = int(body.get("count") or 0)
-            answers = result.get("answers") or []
-            for definition in result.get("activities") or []:
+
+        def fetch(page: int, limit: int) -> dict:
+            body = self.client.export_page(applet_id, page=page, limit=limit, from_date=from_date)
+            # The page's activity definitions ride along; keep them for activities deleted since.
+            for definition in (body.get("result") or {}).get("activities") or []:
                 self._register_deleted_activity(applet_id, applet_name, definition)
-            for answer in answers:
+            return {"result": (body.get("result") or {}).get("answers") or [], "count": body.get("count") or 0}
+
+        for chunk, fetched, total in self._paged(
+            f"reading the completions of {applet_name}", fetch, kind="completions", page_size=EXPORT_PAGE_SIZE
+        ):
+            for answer in chunk:
                 if answer.get("id") in seen:
                     continue
                 seen.add(answer.get("id"))
                 completion = self._completion(applet_id, answer)
                 if completion:
                     self.data.completions.append(completion)
-            fetched += len(answers)
             self.progress(done=min(fetched, total) if total else fetched, total=total or None)
-            if not answers or fetched >= total:
-                break
-            page += 1
 
     def _register_deleted_activity(self, applet_id: str, applet_name: str, definition: dict) -> None:
         activity_id = definition.get("id") or str(definition.get("idVersion") or "")[:36]
