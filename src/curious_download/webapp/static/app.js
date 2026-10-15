@@ -670,6 +670,10 @@ async function init() {
   } catch {
     return; // the token-error view is already shown by api()
   }
+  if (snapshot.banner) {
+    $("app-banner").textContent = snapshot.banner;
+    $("app-banner").hidden = false;
+  }
   $("login-server").value = snapshot.settings.server || "";
   $("login-email").value = snapshot.settings.email || "";
   for (const input of document.querySelectorAll(".output-input")) input.value = snapshot.settings.outputDir;

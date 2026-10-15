@@ -126,7 +126,9 @@ def create_app(
     token: str,
     client_factory=CuriousClient,
     allowed_hosts: set[str] | None = None,
+    banner: str | None = None,
 ) -> FastAPI:
+    """The app. `banner` is shown above the login form (the demo uses it to say the data is fake)."""
     state = AppState(token, client_factory)
     hosts = {host.lower() for host in (allowed_hosts or LOCAL_HOSTS)}
     app = FastAPI(title="Curious app", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
@@ -201,6 +203,7 @@ def create_app(
         settings = _load_settings()
         return {
             "version": __version__,
+            "banner": banner,
             "loggedIn": state.session is not None,
             "email": state.session.email if state.session else None,
             "server": state.session.server if state.session else None,

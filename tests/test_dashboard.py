@@ -468,3 +468,30 @@ def test_csv_exports(make_client):
         for line in rows
     )
     assert any(f"P002,EMA Study,Evening,{day(-9).isoformat()}" in line and ",missed," in line for line in rows)
+
+
+# -- demo server -------------------------------------------------------------------------------------------
+
+
+def test_demo_server_says_it_is_fake(monkeypatch, tmp_path):
+    from . import demo_server
+
+    monkeypatch.setattr(cli, "SETTINGS_PATH", tmp_path / "settings.json")
+    server = demo_server.DemoServer()
+    app = create_app(
+        token=TOKEN,
+        client_factory=lambda url: CuriousClient(url, transport=server.transport()),
+        allowed_hosts={"testserver"},
+        banner=demo_server.BANNER,
+    )
+    client = TestClient(app)
+    client.headers["X-Curious-Token"] = TOKEN
+    assert "fake data" in client.get("/api/state").json()["banner"]
+    real = client.post(
+        "/api/login", json={"server": "https://api.real.test", "email": "someone@real.org", "password": "secret"}
+    )
+    assert real.status_code == 401
+    assert "demo with fake data" in real.json()["error"] and fake.EMAIL in real.json()["error"]
+    assert "someone@real.org" in real.json()["error"]
+    ok = client.post("/api/login", json={"server": "https://x", "email": fake.EMAIL, "password": fake.PASSWORD})
+    assert ok.status_code == 200 and ok.json()["ok"]
