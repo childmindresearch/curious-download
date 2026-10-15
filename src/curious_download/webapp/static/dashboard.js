@@ -24,6 +24,8 @@
     grid: null,
     rows: [], // rows after search and sort
     entityChoice: null, // null = all, else an array of entity keys
+    participantChoice: null, // null = all, else an array of participant keys
+    onlyWithData: false,
     focus: null,
     pollTimer: null,
     editing: null, // the config being edited (null when creating)
@@ -122,6 +124,8 @@
     dash.current = dash.studies.find((study) => study.id === id) || null;
     dash.focus = null;
     dash.entityChoice = dash.current && dash.current.entities ? dash.current.entities : null;
+    dash.participantChoice = dash.current && dash.current.participants ? dash.current.participants : null;
+    dash.onlyWithData = Boolean(dash.current && dash.current.only_with_data);
     if (dash.current) localStorage.setItem("dashStudy", dash.current.id);
     $("dash-edit").disabled = !dash.current;
     $("dash-delete").disabled = !dash.current;
@@ -299,17 +303,66 @@
     select.append(el("option", { value: "" }, "any activity"));
     const applets = checkedApplets();
     const details = await Promise.all(applets.map((applet) => api(`/api/applets/${applet.appletId}`).catch(() => null)));
+    const items = [];
     details.forEach((detail, index) => {
       if (!detail) return;
       const prefix = applets.length > 1 ? `${applets[index].name}: ` : "";
+      // Hidden and reviewer-only activities never appear on the dashboard, so they are not offered.
       for (const activity of detail.activities) {
-        select.append(el("option", { value: `${detail.id}:activity:${activity.id}` }, `${prefix}${activity.name}`));
+        if (activity.hidden || activity.reviewable) continue;
+        items.push({ key: `${detail.id}:activity:${activity.id}`, label: `${prefix}${activity.name}` });
       }
       for (const flow of detail.flows) {
-        select.append(el("option", { value: `${detail.id}:flow:${flow.id}` }, `${prefix}Flow: ${flow.name}`));
+        if (flow.hidden) continue;
+        items.push({ key: `${detail.id}:flow:${flow.id}`, label: `${prefix}Flow: ${flow.name}` });
       }
     });
+    for (const item of items) select.append(el("option", { value: item.key }, item.label));
     if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+    fillEditorEntities(items);
+  }
+
+  // The editor's "Activities to show": everything ticked unless the study already narrows it.
+  function fillEditorEntities(items) {
+    const container = $("dash-editor-entities");
+    const options = container.querySelector(".options");
+    const previous = [...options.querySelectorAll("input")];
+    const previousKeys = new Set(previous.map((box) => box.value));
+    const previouslyChecked = new Set(previous.filter((box) => box.checked).map((box) => box.value));
+    const saved = dash.editing && dash.editing.entities ? new Set(dash.editing.entities) : null;
+    options.innerHTML = "";
+    if (!items.length) {
+      options.append(el("div", { class: "fineprint" }, "Tick an applet first."));
+      return;
+    }
+    for (const item of items) {
+      const checkbox = el("input", { type: "checkbox", value: item.key });
+      if (previousKeys.has(item.key)) {
+        checkbox.checked = previouslyChecked.has(item.key); // keep what the user set
+      } else {
+        checkbox.checked = !saved || saved.has(item.key) || !previousKeys.size; // new items start ticked
+      }
+      options.append(el("label", {}, checkbox, " ", item.label));
+    }
+    bindChecklistSearch(container);
+  }
+
+  function editorEntities() {
+    const boxes = [...$("dash-editor-entities").querySelectorAll(".options input")];
+    if (!boxes.length) return dash.editing ? dash.editing.entities : null;
+    const checked = boxes.filter((box) => box.checked).map((box) => box.value);
+    return checked.length === boxes.length ? null : checked;
+  }
+
+  function bindChecklistSearch(container) {
+    const search = container.querySelector("input[type=search]");
+    const options = container.querySelector(".options");
+    search.oninput = () => {
+      const query = search.value.toLowerCase();
+      for (const row of options.querySelectorAll("label")) {
+        row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+      }
+    };
   }
 
   function toggleTypeOptions() {
@@ -339,7 +392,9 @@
       name: $("dash-name").value.trim(),
       view: document.querySelector("input[name=dash-type]:checked").value,
       applets,
-      entities: dash.editing ? dash.editing.entities : null,
+      entities: editorEntities(),
+      participants: dash.editing ? dash.editing.participants : null,
+      only_with_data: dash.editing ? Boolean(dash.editing.only_with_data) : false,
       start_rule: $("dash-start-rule").value,
       start_entity: $("dash-start-entity").value || null,
       study_days: Number($("dash-study-days").value) || 28,
@@ -392,16 +447,92 @@
     $("dash-search").value = "";
     $("dash-sort").value = "label";
     $("dash-entities-mode").value = dash.entityChoice ? "some" : "all";
+    $("dash-participants-mode").value = dash.participantChoice ? "some" : "all";
+    $("dash-only-with-data").checked = dash.onlyWithData;
     fillEntityChecklist();
+    fillParticipantChecklist();
     syncControlVisibility();
   }
+
+  // The chosen participants, activities, and the with-data switch are saved on the study.
+  const CONFIG_FIELDS = [
+    "id", "name", "view", "applets", "entities", "participants", "only_with_data", "start_rule", "start_entity",
+    "study_days", "manual_starts", "aliases", "late_counts_as_done", "count_from_joined", "include_removed",
+    "data_from", "granularity", "created",
+  ];
+
+  async function persistChoices() {
+    if (!dash.current) return;
+    const body = {};
+    for (const field of CONFIG_FIELDS) body[field] = dash.current[field];
+    body.entities = dash.entityChoice;
+    body.participants = dash.participantChoice;
+    body.only_with_data = dash.onlyWithData;
+    try {
+      const saved = await post("/api/dashboard/studies", body);
+      Object.assign(dash.current, saved);
+      const index = dash.studies.findIndex((study) => study.id === saved.id);
+      if (index >= 0) dash.studies[index] = dash.current;
+    } catch (error) {
+      setError("dash-error", `The choice could not be saved on the study: ${error.message}`);
+    }
+  }
+
+  function fillParticipantChecklist() {
+    const container = $("dash-participants-list");
+    const options = container.querySelector(".options");
+    options.innerHTML = "";
+    const participants = (dash.current.data && dash.current.data.participantList) || [];
+    for (const participant of participants) {
+      const checkbox = el("input", { type: "checkbox", value: participant.key });
+      checkbox.checked = !dash.participantChoice || dash.participantChoice.includes(participant.key);
+      const label = el("label", { class: participant.hasData ? "" : "no-data" }, checkbox, " ", participant.label);
+      if (!participant.hasData) label.append(el("small", {}, " — no data"));
+      if (participant.removed) label.append(el("small", {}, " — removed"));
+      options.append(label);
+    }
+    container.hidden = $("dash-participants-mode").value !== "some";
+    bindChecklistSearch(container);
+  }
+
+  $("dash-participants-mode").onchange = () => {
+    const some = $("dash-participants-mode").value === "some";
+    $("dash-participants-list").hidden = !some;
+    if (!some) {
+      dash.participantChoice = null;
+      persistChoices().then(loadView);
+    }
+  };
+  $("dash-participants-apply").onclick = () => {
+    const boxes = [...$("dash-participants-list").querySelectorAll(".options input")];
+    const checked = boxes.filter((box) => box.checked).map((box) => box.value);
+    dash.participantChoice = checked.length === boxes.length ? null : checked;
+    if (!dash.participantChoice) $("dash-participants-mode").value = "all";
+    persistChoices().then(loadView);
+  };
+  $("dash-participants-all").onclick = () => {
+    for (const box of $("dash-participants-list").querySelectorAll(".options input")) box.checked = true;
+  };
+  $("dash-participants-none").onclick = () => {
+    for (const box of $("dash-participants-list").querySelectorAll(".options input")) box.checked = false;
+  };
+  $("dash-only-with-data").onchange = () => {
+    dash.onlyWithData = $("dash-only-with-data").checked;
+    persistChoices().then(loadView);
+  };
+  $("dash-entities-all").onclick = () => {
+    for (const box of $("dash-entities-list").querySelectorAll(".options input")) box.checked = true;
+  };
+  $("dash-entities-none").onclick = () => {
+    for (const box of $("dash-entities-list").querySelectorAll(".options input")) box.checked = false;
+  };
 
   function syncControlVisibility() {
     const view = $("dash-view").value;
     for (const node of document.querySelectorAll(".dash-range")) node.hidden = !(view === "fixed" || view === "individual");
     for (const node of document.querySelectorAll(".dash-gran")) node.hidden = view === "cross";
     for (const node of document.querySelectorAll(".dash-days")) node.hidden = view !== "rolling";
-    document.querySelector(".dash-late-toggle").hidden = view === "cross";
+    $("dash-view-late").closest("label").hidden = view === "cross";
   }
 
   function fillEntityChecklist() {
@@ -416,13 +547,7 @@
       options.append(el("label", {}, checkbox, " ", multi ? `${entity.applet}: ${entity.label}` : entity.label));
     }
     container.hidden = $("dash-entities-mode").value !== "some";
-    const search = container.querySelector("input[type=search]");
-    search.oninput = () => {
-      const query = search.value.toLowerCase();
-      for (const row of options.querySelectorAll("label")) {
-        row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
-      }
-    };
+    bindChecklistSearch(container);
   }
 
   $("dash-entities-mode").onchange = () => {
@@ -430,12 +555,15 @@
     $("dash-entities-list").hidden = !some;
     if (!some) {
       dash.entityChoice = null;
-      loadView();
+      persistChoices().then(loadView);
     }
   };
   $("dash-entities-apply").onclick = () => {
-    dash.entityChoice = [...$("dash-entities-list").querySelectorAll(".options input:checked")].map((box) => box.value);
-    loadView();
+    const boxes = [...$("dash-entities-list").querySelectorAll(".options input")];
+    const checked = boxes.filter((box) => box.checked).map((box) => box.value);
+    dash.entityChoice = checked.length === boxes.length ? null : checked;
+    if (!dash.entityChoice) $("dash-entities-mode").value = "all";
+    persistChoices().then(loadView);
   };
 
   $("dash-view").onchange = () => {
@@ -467,6 +595,8 @@
     }
     if (view === "rolling") params.set("studyDays", $("dash-view-days").value || "28");
     if (dash.entityChoice) params.set("entities", dash.entityChoice.join(","));
+    if (dash.participantChoice) params.set("participants", dash.participantChoice.join(","));
+    params.set("onlyWithData", dash.onlyWithData ? "true" : "false");
     if (view === "individual" && dash.focus) params.set("focus", dash.focus);
     return params;
   }

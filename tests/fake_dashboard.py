@@ -33,8 +33,8 @@ EV_MORNING, EV_EVENING, EV_FLOW, EV_RATING, EV_SLEEP_OLD, EV_MORNING_P2, EV_BASE
     f"e{n}e{n}e{n}e{n}-0000-4000-8000-00000000000{n}" for n in range(1, 8)
 )
 
-U1, U2, U5, MANAGER = (f"u{n}u{n}u{n}u{n}-0000-4000-8000-00000000000{n}" for n in (1, 2, 5, 9))
-S1, S2, S3, S4, S9, S1B, S2B = (f"s{n}s{n}s{n}s{n}-0000-4000-8000-00000000000{n}" for n in (1, 2, 3, 4, 9, 6, 7))
+U1, U2, U5, U8, MANAGER = (f"u{n}u{n}u{n}u{n}-0000-4000-8000-00000000000{n}" for n in (1, 2, 5, 8, 9))
+S1, S2, S3, S4, S9, S1B, S2B, S8 = (f"s{n}s{n}s{n}s{n}-0000-4000-8000-00000000000{n}" for n in (1, 2, 3, 4, 9, 6, 7, 8))
 
 TODAY = datetime.now().astimezone().date()
 TZ = host_tz_offset_minutes()
@@ -344,6 +344,13 @@ class FakeStudyServer:
                     "status": "approved",
                     "isAnonymousRespondent": False,
                     "details": [detail(S4, "P004", "", -9, deleted=True)],
+                },
+                {
+                    "id": U8,
+                    "status": "approved",
+                    "isAnonymousRespondent": False,
+                    # P005 joined recently and has not completed anything yet.
+                    "details": [detail(S8, "P005", "Sam", -4)],
                 },
                 {
                     "id": "anon",

@@ -29,6 +29,8 @@ class StudyConfig:
     view: str = "fixed"
     applets: list[dict] = field(default_factory=list)  # [{ownerId, appletId, name}]
     entities: list[str] | None = None  # entity keys to show; None means all visible activities and flows
+    participants: list[str] | None = None  # participant keys (secret IDs) to show; None means everyone
+    only_with_data: bool = False  # leave out participants who have not completed anything
     start_rule: str = "first_completion"  # rolling view: how each participant's day 1 is found
     start_entity: str | None = None  # rolling view: with first_completion, only this activity or flow counts
     study_days: int = 28  # rolling view: how many study days to show
@@ -89,6 +91,10 @@ class StudyConfig:
             str(k).strip(): str(v).strip() for k, v in (config.manual_starts or {}).items() if str(k).strip()
         }
         config.aliases = {str(k).strip(): str(v).strip() for k, v in (config.aliases or {}).items() if str(k).strip()}
+        if config.participants is not None:
+            config.participants = [str(key).strip() for key in config.participants if str(key).strip()]
+        if config.entities is not None:
+            config.entities = [str(key).strip() for key in config.entities if str(key).strip()]
         return config
 
 

@@ -73,6 +73,8 @@ class ViewParams:
     count_from_joined: bool = True
     include_removed: bool = False
     entity_keys: set[str] | None = None
+    participant_keys: set[str] | None = None
+    only_with_data: bool = False
     focus: str | None = None  # individual view: one participant's own timeline
     start_rule: str = "first_completion"
     start_entity: str | None = None
@@ -120,6 +122,14 @@ def view_params(
         entity_keys = set(config.entities)
     else:
         entity_keys = None
+    participants = query.get("participants")
+    participant_keys: set[str] | None
+    if participants:
+        participant_keys = {key for key in str(participants).split(",") if key}
+    elif config.participants:
+        participant_keys = set(config.participants)
+    else:
+        participant_keys = None
     study_days = int(query.get("studyDays") or config.study_days)
     return ViewParams(
         view=view,
@@ -130,6 +140,8 @@ def view_params(
         count_from_joined=flag("countFromJoined", config.count_from_joined),
         include_removed=flag("includeRemoved", config.include_removed),
         entity_keys=entity_keys,
+        participant_keys=participant_keys,
+        only_with_data=flag("onlyWithData", config.only_with_data),
         focus=query.get("focus") or None,
         start_rule=query.get("startRule") or config.start_rule,
         start_entity=query.get("startEntity") or config.start_entity,
@@ -426,6 +438,8 @@ def _finish(
             "countFromJoined": params.count_from_joined,
             "includeRemoved": params.include_removed,
             "entities": sorted(params.entity_keys) if params.entity_keys is not None else None,
+            "participants": sorted(params.participant_keys) if params.participant_keys is not None else None,
+            "onlyWithData": params.only_with_data,
             "focus": params.focus,
             "startRule": params.start_rule,
             "startEntity": params.start_entity,
@@ -460,6 +474,8 @@ def _options(params: ViewParams, first: date, last: date) -> Options:
         count_from_joined=params.count_from_joined,
         include_removed=params.include_removed,
         entity_keys=params.entity_keys,
+        participant_keys=params.participant_keys,
+        only_with_data=params.only_with_data,
         host_tz_offset=params.host_tz_offset,
     )
 

@@ -364,7 +364,9 @@ main:has(#tab-dashboard:not([hidden])) { max-width: min(1600px, 98vw); }
 .dash-controls input[type="number"] { min-width: 90px; width: 90px; }
 .dash-controls input[type="checkbox"] { min-width: 0; width: auto; margin: 0; }
 .dash-late-toggle { font-size: 12.5px !important; align-self: flex-end; margin-bottom: 8px; }
-#dash-entities-list button { margin-top: 8px; padding: 5px 10px; font-size: 12.5px; }
+.checklist-buttons { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.checklist-buttons button { padding: 5px 10px; font-size: 12.5px; }
+.checklist .options label.no-data { color: var(--muted); }
 
 .dash-focus {
   display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 8px 12px;

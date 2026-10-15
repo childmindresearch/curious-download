@@ -202,6 +202,8 @@ class Options:
     count_from_joined: bool = True
     include_removed: bool = False
     entity_keys: set[str] | None = None  # None: every visible entity
+    participant_keys: set[str] | None = None  # None: every participant
+    only_with_data: bool = False  # leave out participants with no completion at all
     host_tz_offset: int = 0  # minutes, used for participants with no completion yet
 
 
@@ -311,8 +313,15 @@ def compute(data: StudyData, options: Options) -> Computed:
     if options.entity_keys is not None:
         entities &= options.entity_keys
 
+    with_data = {completion.participant for completion in data.completions}
     participants = sorted(
-        (p for p in data.participants.values() if options.include_removed or not p.is_removed_everywhere()),
+        (
+            p
+            for p in data.participants.values()
+            if (options.include_removed or not p.is_removed_everywhere())
+            and (options.participant_keys is None or p.key in options.participant_keys)
+            and (not options.only_with_data or p.key in with_data)
+        ),
         key=lambda p: p.secret_id.lower(),
     )
     completions_by_participant: dict[str, list[Completion]] = defaultdict(list)

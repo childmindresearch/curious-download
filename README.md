@@ -243,6 +243,14 @@ the same person. Reviewer assessments, hidden and reviewer-only activities, and 
 only exist inside a flow are left out. Participants removed from an applet are hidden unless you
 ask for them; their data is still on the server.
 
+### Choosing what to show
+
+Above the grid, **Activities** and **Participants** each offer *All* or *Choose…* with a tickable
+list, and **only participants with data** hides everyone who has not completed anything in the
+loaded data. The three choices are saved on the study, so they are still in place the next time
+you open it; *All* clears a choice. The study editor has the same **Activities to show** list, so an
+applet with staff-only or retired activities can be narrowed before the first load.
+
 ### Exports
 
 **Export dashboard** writes the view you are looking at into a folder,

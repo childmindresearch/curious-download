@@ -282,6 +282,14 @@
             <div class="options"></div>
           </div>
 
+          <label>Activities to show
+            <small>Untick what you don't want on the dashboard. Everything is shown by default; you can change this later from the dashboard too.</small>
+          </label>
+          <div class="checklist" id="dash-editor-entities">
+            <input type="search" placeholder="Search activities…">
+            <div class="options"></div>
+          </div>
+
           <label>Dashboard type</label>
           <div class="type-cards" id="dash-type">
             <label class="type-card">
@@ -389,6 +397,16 @@
                 <option value="some">Choose…</option>
               </select>
             </label>
+            <label>Participants
+              <select id="dash-participants-mode">
+                <option value="all">All</option>
+                <option value="some">Choose…</option>
+              </select>
+            </label>
+            <label class="checkbox-row dash-late-toggle">
+              <input type="checkbox" id="dash-only-with-data">
+              only participants with data
+            </label>
             <label>Sort
               <select id="dash-sort">
                 <option value="label">Participant</option>
@@ -406,7 +424,20 @@
           <div class="checklist" id="dash-entities-list" hidden>
             <input type="search" placeholder="Search activities…">
             <div class="options"></div>
-            <button class="ghost" id="dash-entities-apply" type="button">Apply</button>
+            <div class="checklist-buttons">
+              <button class="ghost" id="dash-entities-all" type="button">Tick all</button>
+              <button class="ghost" id="dash-entities-none" type="button">Untick all</button>
+              <button class="primary" id="dash-entities-apply" type="button">Apply</button>
+            </div>
+          </div>
+          <div class="checklist" id="dash-participants-list" hidden>
+            <input type="search" placeholder="Search participants…">
+            <div class="options"></div>
+            <div class="checklist-buttons">
+              <button class="ghost" id="dash-participants-all" type="button">Tick all</button>
+              <button class="ghost" id="dash-participants-none" type="button">Untick all</button>
+              <button class="primary" id="dash-participants-apply" type="button">Apply</button>
+            </div>
           </div>
           <div id="dash-focus" class="dash-focus" hidden>
             <span id="dash-focus-label"></span>

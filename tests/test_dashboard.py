@@ -167,10 +167,10 @@ def test_load_reads_participants_schedules_and_completions(make_client):
     client = make_client()
     study = create(client)
     job = load(client, study["id"])
-    # P001, P002 (p002x merged in), P003 (shell), P004 (removed, no data), P009 (removed, data kept)
+    # P001, P002 (p002x merged in), P003 (shell), P004 (removed, no data), P005 (no data yet), P009 (removed, data kept)
     assert job["result"] == {
         "studyId": study["id"],
-        "participants": 5,
+        "participants": 6,
         "completions": 16,
         "applets": 2,
         "activities": 7,
@@ -180,7 +180,7 @@ def test_load_reads_participants_schedules_and_completions(make_client):
     status = client.get(f"/api/dashboard/studies/{study['id']}").json()
     assert status["loaded"] and status["loadingJobId"] is None
     data = status["data"]
-    assert data["participants"] == 5 and data["completions"] == 16
+    assert data["participants"] == 6 and data["completions"] == 16
     by_name = {applet["name"]: applet for applet in data["applets"]}
     assert by_name["EMA Study"]["scheduleAvailable"] and by_name["EMA Study"]["historyAvailable"]
     assert not by_name["Intake"]["scheduleAvailable"] and not by_name["Intake"]["historyAvailable"]
@@ -220,7 +220,7 @@ def test_bulk_reads_are_paged_and_shrink_when_the_server_refuses_a_page(make_cli
     client = make_client(fake.FakeStudyServer(max_page=2))
     study = create(client)
     job = load(client, study["id"])
-    assert job["result"]["participants"] == 5 and job["result"]["completions"] == 16, "nothing lost or doubled"
+    assert job["result"]["participants"] == 6 and job["result"]["completions"] == 16, "nothing lost or doubled"
 
     def limits(suffix: str) -> list[int]:
         return [int(r.url.params["limit"]) for r in client.fake.requests if r.url.path.endswith(suffix)]
@@ -274,7 +274,9 @@ def test_fixed_view_cells(make_client):
     )
 
     assert grid["view"] == "fixed" and grid["params"]["first"] == day(-10).isoformat()
-    assert [row["label"] for row in grid["rows"]] == ["P001", "P002", "P003"], "removed participants are left out"
+    assert [row["label"] for row in grid["rows"]] == ["P001", "P002", "P003", "P005"], (
+        "removed participants are left out"
+    )
     assert len(grid["groups"]) == 16 and len(grid["columns"]) == 16 * 7
     assert sum(1 for group in grid["groups"] if group["today"]) == 1
 
@@ -318,7 +320,7 @@ def test_fixed_view_cells(make_client):
     p001 = next(row for row in grid["rows"] if row["label"] == "P001")
     assert p001["summary"]["pct"] is not None and p001["summary"]["last"] and p001["summary"]["next"]
     assert "Pat" in p001["sub"] and "EMA Study" in p001["sub"]
-    assert grid["overall"]["participants"] == 3 and grid["totals"][0] is not None
+    assert grid["overall"]["participants"] == 4 and grid["totals"][0] is not None
     assert any("Intake" in note for note in grid["notes"])
 
 
@@ -344,12 +346,55 @@ def test_fixed_view_options(make_client):
     with_removed = view(
         client, study["id"], view="fixed", first=day(-6).isoformat(), last=day(-6).isoformat(), includeRemoved="true"
     )
-    assert [row["label"] for row in with_removed["rows"]] == ["P001", "P002", "P003", "P004", "P009"]
+    assert [row["label"] for row in with_removed["rows"]] == ["P001", "P002", "P003", "P004", "P005", "P009"]
     assert cell(with_removed, "P009", col(day(-6), MORNING_KEY))["s"] == "done"
     assert "removed" in next(row for row in with_removed["rows"] if row["label"] == "P009")["sub"]
 
     bad = client.get(f"/api/dashboard/studies/{study['id']}/view", params={"first": "soon"})
     assert bad.status_code == 400
+
+
+def test_applet_details_flag_hidden_and_reviewer_only_activities(make_client):
+    client = make_client()
+    details = client.get(f"/api/applets/{EMA}").json()
+    flags = {a["name"]: (a["hidden"], a["reviewable"]) for a in details["activities"]}
+    assert flags["Morning"] == (False, False)
+    assert flags["Clinician rating"] == (False, True) and flags["Hidden one"] == (True, False)
+    assert details["flows"][0]["hidden"] is False
+
+
+def test_participant_filters(make_client):
+    client = make_client()
+    study = loaded_study(client)
+    status = client.get(f"/api/dashboard/studies/{study['id']}").json()
+    choices = {p["key"]: p for p in status["data"]["participantList"]}
+    assert set(choices) == {"P001", "P002", "P003", "P004", "P005", "P009"}
+    assert choices["P001"]["hasData"] and choices["P001"]["label"] == "P001 (Pat, Child)"
+    assert not choices["P005"]["hasData"] and choices["P005"]["applets"] == ["EMA Study"]
+    assert choices["P009"]["removed"] and not choices["P005"]["removed"]
+
+    params = {"view": "fixed", "first": day(-10).isoformat(), "last": day(-9).isoformat()}
+    chosen = view(client, study["id"], **params, participants="P001,P003")
+    assert [row["label"] for row in chosen["rows"]] == ["P001", "P003"]
+    assert chosen["params"]["participants"] == ["P001", "P003"]
+
+    with_data = view(client, study["id"], **params, onlyWithData="true")
+    assert [row["label"] for row in with_data["rows"]] == ["P001", "P002", "P003"], "P005 has nothing yet"
+    assert with_data["params"]["onlyWithData"] is True
+    both = view(client, study["id"], **params, participants="P001,P005", onlyWithData="true")
+    assert [row["label"] for row in both["rows"]] == ["P001"]
+
+    # The choices can be saved on the study and then apply by default.
+    saved = client.post(
+        "/api/dashboard/studies",
+        json={**study, "participants": ["P002", " P005 "], "only_with_data": True, "entities": [MORNING_KEY]},
+    ).json()
+    assert saved["participants"] == ["P002", "P005"] and saved["only_with_data"] and saved["loaded"]
+    default = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert [row["label"] for row in default["rows"]] == ["P002"]
+    assert {c["entity"] for c in default["columns"]} == {MORNING_KEY}
+    everyone = view(client, study["id"], **params, participants="", onlyWithData="false")
+    assert [row["label"] for row in everyone["rows"]] == ["P002", "P005"], "an empty parameter keeps the saved choice"
 
 
 # -- cross-sectional view ------------------------------------------------------------------------------
@@ -491,7 +536,7 @@ def test_csv_exports(make_client):
     assert 'filename="dashboard_ema-pilot_fixed_grid_' in grid_csv.headers["content-disposition"]
     assert grid_csv.text.startswith("﻿participant,details,adherence,")
     lines = grid_csv.text.splitlines()
-    assert len(lines) == 4 and lines[1].startswith("P001,") and "1/1 (done)" in lines[1]
+    assert len(lines) == 5 and lines[1].startswith("P001,") and "1/1 (done)" in lines[1]
 
     long_csv = client.get(f"/api/dashboard/studies/{study['id']}/export", params={**params, "format": "long"})
     rows = long_csv.text.lstrip("﻿").splitlines()
@@ -543,7 +588,7 @@ def test_export_job_writes_json_and_csvs(make_client, tmp_path):
         "participants.csv",
     ]
     assert result["files"] == sorted(p.name for p in folder.iterdir())
-    assert result["counts"]["rows"] == 3 and result["counts"]["columns"] == 14
+    assert result["counts"]["rows"] == 4 and result["counts"]["columns"] == 14
 
     # The JSON copy is exactly what the page renders for the same parameters.
     grid_json = json.loads((folder / "dashboard_grid.json").read_text())
@@ -558,7 +603,7 @@ def test_export_job_writes_json_and_csvs(make_client, tmp_path):
     assert fields["study.name"] == "EMA pilot" and fields["view.kind"] == "fixed"
     assert fields["done"] == "Completed", "the status legend is on the Info sheet"
     cells_sheet = workbook["Cells"]
-    assert cells_sheet.max_row == 1 + 3 * 14 and cells_sheet["A1"].value == "participant"
+    assert cells_sheet.max_row == 1 + 4 * 14 and cells_sheet["A1"].value == "participant"
     assert isinstance(cells_sheet["G2"].value, int), "counts are numbers, not text"
     grid_sheet = workbook["Grid"]
     assert grid_sheet["A2"].value == "Participant" and grid_sheet["A3"].value == "P001"
@@ -574,15 +619,15 @@ def test_export_job_writes_json_and_csvs(make_client, tmp_path):
     assert "server" not in info["study"] and info["server"] == "https://api.curious.test"
     assert info["view"]["kind"] == "fixed" and info["view"]["first"] == day(-10).isoformat()
     assert info["view"]["lateCountsAsDone"] is True and info["view"]["today"]
-    assert info["data"]["participants"] == 5 and [a["name"] for a in info["data"]["applets"]] == ["EMA Study", "Intake"]
-    assert info["summary"]["participants"] == 3 and info["summary"]["adherence"] is not None
+    assert info["data"]["participants"] == 6 and [a["name"] for a in info["data"]["applets"]] == ["EMA Study", "Intake"]
+    assert info["summary"]["participants"] == 4 and info["summary"]["adherence"] is not None
     assert {s["status"] for s in info["statuses"]} >= {"done", "missed", "upcoming"}
     assert info["files"]["cells"] == "dashboard_cells.csv"
     assert set(info["columns"]) == set(info["files"].values()) - {"export_info.json"}
     assert info["files"]["workbook"] == "dashboard.xlsx" and info["files"]["gridJson"] == "dashboard_grid.json"
 
     cells = read_rows(folder / "dashboard_cells.csv")
-    assert len(cells) == 3 * 14
+    assert len(cells) == 4 * 14
     morning = next(r for r in cells if r["participant"] == "P001" and r["column"] == col(day(-10), MORNING_KEY))
     assert (morning["status"], morning["expected"], morning["done"], morning["activity"], morning["applet"]) == (
         "done",
@@ -599,7 +644,7 @@ def test_export_job_writes_json_and_csvs(make_client, tmp_path):
     assert consent["status"] == "not_in_applet" and consent["expected"] == ""
 
     participants = {r["participant"]: r for r in read_rows(folder / "participants.csv")}
-    assert set(participants) == {"P001", "P002", "P003"}
+    assert set(participants) == {"P001", "P002", "P003", "P005"}
     assert participants["P001"]["nickname"] == "Pat" and participants["P001"]["applets"] == "EMA Study, Intake"
     assert participants["P001"]["schedule"] == "default" and participants["P002"]["schedule"] == "individual"
     assert participants["P001"]["joined"] == day(-11).isoformat(), "added to Intake the day before EMA"

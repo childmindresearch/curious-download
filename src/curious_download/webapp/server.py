@@ -295,8 +295,19 @@ def create_app(
             "version": details.get("version"),
             "hasEncryption": bool(details.get("encryption")),
             "unlocked": applet_id in current.decryptors,
-            "activities": [{"id": a["id"], "name": a.get("name")} for a in details.get("activities") or []],
-            "flows": [{"id": f["id"], "name": f.get("name")} for f in details.get("activityFlows") or []],
+            "activities": [
+                {
+                    "id": a["id"],
+                    "name": a.get("name"),
+                    "hidden": bool(a.get("isHidden")),
+                    "reviewable": bool(a.get("isReviewable")),
+                }
+                for a in details.get("activities") or []
+            ],
+            "flows": [
+                {"id": f["id"], "name": f.get("name"), "hidden": bool(f.get("isHidden"))}
+                for f in details.get("activityFlows") or []
+            ],
         }
 
     @app.get("/api/workspaces/{owner_id}/applets/{applet_id}/participants")
@@ -470,6 +481,20 @@ def create_app(
             raise HTTPException(404, "No such study.")
         return config
 
+    def participant_choices(data) -> list[dict]:
+        """Everyone in the loaded data, for the participant picker."""
+        with_data = {completion.participant for completion in data.completions}
+        return [
+            {
+                "key": p.key,
+                "label": p.label,
+                "hasData": p.key in with_data,
+                "removed": p.is_removed_everywhere(),
+                "applets": [data.applets[a]["name"] for a in sorted(p.applet_ids) if a in data.applets],
+            }
+            for p in sorted(data.participants.values(), key=lambda p: p.secret_id.lower())
+        ]
+
     def study_payload(config: studies.StudyConfig) -> dict:
         current = session()
         data = state.dashboards.get(config.id)
@@ -500,6 +525,7 @@ def create_app(
                     {"key": e.key, "label": e.label, "applet": e.applet_name, "kind": e.kind, "deleted": e.deleted}
                     for e in data.visible_entities()
                 ],
+                "participantList": participant_choices(data),
                 "warnings": data.warnings,
                 "span": [first.isoformat() if first else None, last.isoformat() if last else None],
             }
