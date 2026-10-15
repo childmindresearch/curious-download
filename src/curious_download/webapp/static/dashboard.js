@@ -793,7 +793,16 @@
     download(await response.blob(), match ? match[1] : `dashboard_${format}.csv`);
   }
   $("dash-export-grid").onclick = () => exportCsv("grid");
-  $("dash-export-long").onclick = () => exportCsv("long");
+
+  // The full export is a job like the downloads: a folder with export_info.json and the CSVs.
+  $("dash-export").onclick = () => {
+    if (!dash.current || !dash.current.loaded) return;
+    setError("dash-error", "");
+    startJob("dash-export", "dash-error", `/api/dashboard/studies/${dash.current.id}/export-job`, {
+      outputDir: $("dash-output").value,
+      params: Object.fromEntries(viewQuery().entries()),
+    });
+  };
 
   window.dashboard = { show, onLogin };
 })();

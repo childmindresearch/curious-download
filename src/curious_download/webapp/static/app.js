@@ -447,6 +447,7 @@ const KIND_LABELS = {
   dictionary: "Data dictionary",
   counts: "Participant counts",
   dashboard: "Dashboard data",
+  dashboard_export: "Dashboard export",
 };
 
 function renderJobs(jobs) {
@@ -529,6 +530,17 @@ function appendResult(card, job) {
     const ok = result.applets - result.failed;
     card.append(
       el("div", { class: "job-summary" }, `${result.files} data dictionar${result.files === 1 ? "y" : "ies"} from ${ok} applet(s)`),
+    );
+    card.append(el("div", { class: "job-folder" }, result.folder));
+  } else if (job.kind === "dashboard_export") {
+    const counts = result.counts || {};
+    card.append(
+      el(
+        "div",
+        { class: "job-summary" },
+        `${result.study} · ${result.view} view · ${counts.rows} row(s) × ${counts.columns} column(s), ` +
+          `${(counts.occurrenceRows || 0).toLocaleString()} occurrence row(s) · ${(result.files || []).join(", ")}`,
+      ),
     );
     card.append(el("div", { class: "job-folder" }, result.folder));
   } else if (job.kind === "dashboard") {

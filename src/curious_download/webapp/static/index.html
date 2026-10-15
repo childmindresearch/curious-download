@@ -421,11 +421,25 @@
           <div class="dash-footer">
             <span id="dash-count" class="fineprint"></span>
             <span class="dash-footer-buttons">
-              <button class="ghost" id="dash-export-grid" type="button">Download grid CSV</button>
-              <button class="ghost" id="dash-export-long" type="button">Download every occurrence CSV</button>
+              <button class="ghost" id="dash-export-grid" type="button">Quick CSV of this grid</button>
             </span>
           </div>
           <div id="dash-notes" class="dash-notes"></div>
+
+          <div class="dash-export">
+            <label>Export this dashboard into
+              <span class="output-row">
+                <input id="dash-output" class="output-input" type="text" spellcheck="false">
+                <button class="ghost" type="button" data-browse="dash-output">Browse…</button>
+                <button class="primary" id="dash-export" type="button">Export dashboard</button>
+              </span>
+            </label>
+            <p class="fineprint">Writes a folder with <code>export_info.json</code> (study set-up, view settings, when
+              the data was loaded, counts, the status legend), <code>dashboard_cells.csv</code> (one row per participant
+              and column), <code>dashboard_grid.csv</code> (as shown), <code>participants.csv</code> (totals per
+              participant) and <code>occurrences.csv</code> (every expected occurrence and completion). The export
+              appears under Runs with a Show in Finder button.</p>
+          </div>
           <p class="fineprint">How to read it: the schedule (default events, individual events, and their history) is
             expanded into the days and time windows each participant's phone offered an activity. Each completion is
             matched to the occurrence the phone recorded it for; older completions are matched by activity and time

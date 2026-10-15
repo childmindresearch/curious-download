@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -468,6 +472,146 @@ def test_csv_exports(make_client):
         for line in rows
     )
     assert any(f"P002,EMA Study,Evening,{day(-9).isoformat()}" in line and ",missed," in line for line in rows)
+
+
+# -- folder export --------------------------------------------------------------------------------------------
+
+
+def read_rows(path: Path) -> list[dict]:
+    raw = path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf"), "CSVs carry a BOM"
+    return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+
+
+def test_export_job_writes_json_and_csvs(make_client, tmp_path):
+    client = make_client()
+    study = loaded_study(client)
+    params = {"view": "fixed", "first": day(-10).isoformat(), "last": day(-9).isoformat(), "granularity": "day"}
+    started = client.post(
+        f"/api/dashboard/studies/{study['id']}/export-job", json={"outputDir": str(tmp_path / "out"), "params": params}
+    )
+    assert started.status_code == 200, started.text
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    assert job["kind"] == "dashboard_export" and job["title"] == "Dashboard export — EMA pilot"
+    assert any("Intake" in warning for warning in job["warnings"])
+
+    result = job["result"]
+    folder = Path(result["folder"])
+    assert folder.name.startswith("dashboard_EMA_pilot_fixed_") and result["view"] == "fixed"
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "dashboard_cells.csv",
+        "dashboard_grid.csv",
+        "export_info.json",
+        "occurrences.csv",
+        "participants.csv",
+    ]
+    assert result["files"] == sorted(p.name for p in folder.iterdir())
+    assert result["counts"]["rows"] == 3 and result["counts"]["columns"] == 14
+
+    info = json.loads((folder / "export_info.json").read_text())
+    assert info["study"]["name"] == "EMA pilot" and info["study"]["aliases"] == {"p002x": "P002"}
+    assert "server" not in info["study"] and info["server"] == "https://api.curious.test"
+    assert info["view"]["kind"] == "fixed" and info["view"]["first"] == day(-10).isoformat()
+    assert info["view"]["lateCountsAsDone"] is True and info["view"]["today"]
+    assert info["data"]["participants"] == 5 and [a["name"] for a in info["data"]["applets"]] == ["EMA Study", "Intake"]
+    assert info["summary"]["participants"] == 3 and info["summary"]["adherence"] is not None
+    assert {s["status"] for s in info["statuses"]} >= {"done", "missed", "upcoming"}
+    assert info["files"]["cells"] == "dashboard_cells.csv" and set(info["columns"]) == set(info["files"].values()) - {
+        "export_info.json"
+    }
+
+    cells = read_rows(folder / "dashboard_cells.csv")
+    assert len(cells) == 3 * 14
+    morning = next(r for r in cells if r["participant"] == "P001" and r["column"] == col(day(-10), MORNING_KEY))
+    assert (morning["status"], morning["expected"], morning["done"], morning["activity"], morning["applet"]) == (
+        "done",
+        "1",
+        "1",
+        "Morning",
+        "EMA Study",
+    )
+    assert (
+        morning["column_group"].endswith(day(-10).strftime("%-d %b"))
+        and morning["first_completion"] == day(-10).isoformat()
+    )
+    consent = next(r for r in cells if r["participant"] == "P003" and r["column"] == col(day(-10), CONSENT_KEY))
+    assert consent["status"] == "not_in_applet" and consent["expected"] == ""
+
+    participants = {r["participant"]: r for r in read_rows(folder / "participants.csv")}
+    assert set(participants) == {"P001", "P002", "P003"}
+    assert participants["P001"]["nickname"] == "Pat" and participants["P001"]["applets"] == "EMA Study, Intake"
+    assert participants["P001"]["schedule"] == "default" and participants["P002"]["schedule"] == "individual"
+    assert participants["P001"]["joined"] == day(-11).isoformat(), "added to Intake the day before EMA"
+    assert participants["P001"]["removed"] == "no"
+    assert participants["P001"]["expected"] and participants["P001"]["adherence"]
+    assert participants["P001"]["start_date"] == "", "start dates belong to the rolling view"
+
+    grid_lines = (folder / "dashboard_grid.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert grid_lines[0].startswith("participant,details,adherence,")
+    occurrences = read_rows(folder / "occurrences.csv")
+    assert any(r["participant"] == "P001" and r["activity"] == "Morning" and r["status"] == "late" for r in occurrences)
+
+    jobs = client.get("/api/jobs").json()
+    assert {job["kind"] for job in jobs} == {"dashboard", "dashboard_export"}
+
+
+def test_export_job_rolling_and_focus_variants(make_client, tmp_path):
+    client = make_client()
+    study = loaded_study(client, view="rolling", study_days=3)
+    started = client.post(
+        f"/api/dashboard/studies/{study['id']}/export-job",
+        json={"outputDir": str(tmp_path / "out"), "params": {"view": "rolling", "startRule": "joined"}},
+    )
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    folder = Path(job["result"]["folder"])
+    participants = {r["participant"]: r for r in read_rows(folder / "participants.csv")}
+    assert participants["P003"]["start_date"] == day(-3).isoformat()
+    assert participants["P003"]["start_source"] == "added to the applet"
+    assert json.loads((folder / "export_info.json").read_text())["view"]["startRule"] == "joined"
+
+    focused = client.post(
+        f"/api/dashboard/studies/{study['id']}/export-job",
+        json={
+            "outputDir": str(tmp_path / "out"),
+            "params": {
+                "view": "individual",
+                "focus": "P001",
+                "first": day(-10).isoformat(),
+                "last": day(-9).isoformat(),
+            },
+        },
+    )
+    job = wait_for(client, focused.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    folder = Path(job["result"]["folder"])
+    assert (folder / "activities.csv").exists() and not (folder / "participants.csv").exists()
+    activities = read_rows(folder / "activities.csv")
+    assert {r["activity"] for r in activities} >= {"EMA Study: Morning", "Intake: Consent"}
+    assert next(r for r in activities if r["activity"] == "EMA Study: Morning")["applet"] == "EMA Study"
+    cells = read_rows(folder / "dashboard_cells.csv")
+    assert "row" in cells[0] and "participant" not in cells[0]
+
+    bad = client.post(
+        f"/api/dashboard/studies/{study['id']}/export-job",
+        json={"outputDir": str(tmp_path / "out"), "params": {"view": "fixed", "first": "soon"}},
+    )
+    assert bad.status_code == 400
+    missing = client.post(f"/api/dashboard/studies/{study['id']}/export-job", json={"outputDir": "", "params": {}})
+    assert missing.status_code == 400 and "folder" in missing.json()["error"]
+
+
+def test_rows_carry_structured_metadata(make_client):
+    client = make_client()
+    study = loaded_study(client, view="rolling")
+    grid = view(client, study["id"], view="rolling", startRule="joined")
+    p002 = next(row for row in grid["rows"] if row["label"] == "P002")
+    # P002 was added to Intake on day -9, a day before EMA, so that is their earliest "joined" date.
+    assert p002["meta"]["schedule"] == "individual" and p002["meta"]["start"] == day(-9).isoformat()
+    assert p002["meta"]["startSource"] == "added to the applet" and p002["meta"]["applets"] == ["EMA Study", "Intake"]
+    cross = view(client, study["id"], view="cross")
+    assert next(row for row in cross["rows"] if row["label"] == "P001")["meta"]["nickname"] == "Pat"
 
 
 # -- demo server -------------------------------------------------------------------------------------------

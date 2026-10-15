@@ -241,10 +241,19 @@ ask for them; their data is still on the server.
 
 ### Exports
 
-**Download grid CSV** writes the table as shown, one row per participant with the status in each
-cell. **Download every occurrence CSV** writes one row per expected occurrence and per completion
-(participant, applet, activity, day, window, status, completion times, whether it was in the
-window, submission ID), the same content as the click-through details.
+**Export dashboard** writes the view you are looking at into a folder,
+`<output>/dashboard_<study>_<view>_<timestamp>/`, and lists it under Runs with a Show in Finder
+button:
+
+| File | Contents |
+|---|---|
+| `export_info.json` | The study set-up (applets, type, rules), the view settings (range, columns, start rule, which activities), when the data was loaded and from where, counts, the status legend, the notes shown in the app, and what each file holds. No passwords. |
+| `dashboard_cells.csv` | The grid as data: one row per participant and column, with the counts of expected occurrences by outcome (`expected`, `done`, `late`, `partly_done`, `missed`, `open_or_upcoming`, `unscheduled`), the `status` the cell is coloured with, and the first completion day. Cells of applets the participant is not in have status `not_in_applet`. |
+| `dashboard_grid.csv` | The grid as shown, one column per cell, for reading rather than analysis. |
+| `participants.csv` | One row per participant: nickname, tag, applets, the day they were added, default or individual schedule, start date and its source (rolling view), totals, adherence, last completion, next due. In a focused timeline this is `activities.csv`, one row per activity. |
+| `occurrences.csv` | One row per expected occurrence and per completion of it: participant, applet, activity, day, time window, status, schedule (default or individual), periodicity, completion times, whether it was in the window, submission ID. The same content as the click-through details. |
+
+**Quick CSV of this grid** downloads `dashboard_grid.csv` alone through the browser.
 
 ### Trying it without a server
 

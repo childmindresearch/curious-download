@@ -118,6 +118,11 @@ class RevealBody(BaseModel):
     path: str
 
 
+class DashboardExportBody(BaseModel):
+    outputDir: str
+    params: dict[str, str] = Field(default_factory=dict)  # the same query parameters as the view
+
+
 # -- app ----------------------------------------------------------------------
 
 
@@ -607,6 +612,30 @@ def create_app(
         query = {key: value for key, value in request.query_params.items() if key not in ("row", "col")}
         _, result = dashboard_result(study_id, query)
         return {"items": result.details.get((row, col), [])}
+
+    @app.post("/api/dashboard/studies/{study_id}/export-job")
+    def dashboard_export_job(study_id: str, body: DashboardExportBody):
+        """Write the current view as a folder (JSON + CSVs), as the other downloads do."""
+        current = session()
+        query = {key: value for key, value in body.params.items() if value not in (None, "")}
+        config, result = dashboard_result(study_id, query)
+        output = output_dir(body.outputDir)
+        data_info = study_payload(config).get("data") or {}
+        server_url, email = current.server, current.email
+        job = state.jobs.start(
+            "dashboard_export",
+            f"Dashboard export — {config.name}",
+            lambda job: runners.run_dashboard_export(
+                job,
+                server=server_url,
+                email=email,
+                study=config.to_dict(),
+                data_info=data_info,
+                result=result,
+                output=output,
+            ),
+        )
+        return {"jobId": job.id}
 
     @app.get("/api/dashboard/studies/{study_id}/export")
     def dashboard_export(study_id: str, request: Request):

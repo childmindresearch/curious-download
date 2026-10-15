@@ -464,3 +464,6 @@ table.dash-grid tfoot td.cell:hover { outline: none; }
 .badge.s-done, .badge.s-late, .badge.s-partial, .badge.s-missed, .badge.s-due, .badge.s-upcoming, .badge.s-extra, .badge.s-none { box-shadow: none; }
 
 .dash-empty { padding: 28px; text-align: center; color: var(--muted); }
+
+.dash-export { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 4px; }
+.dash-export .output-row button.primary { white-space: nowrap; }

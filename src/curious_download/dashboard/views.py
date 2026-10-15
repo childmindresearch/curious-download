@@ -354,6 +354,22 @@ def _next_due(occurrences: list[Occurrence]) -> datetime | None:
     return min(pending) if pending else None
 
 
+def _participant_meta(participant: Participant, data: StudyData, start: date | None = None, source: str = "") -> dict:
+    """The facts behind a row's label and sub-line, for exports."""
+    joined = [day for day in participant.joined.values() if day]
+    return {
+        "kind": "participant",
+        "nickname": participant.nickname,
+        "tag": participant.tag,
+        "applets": [data.applets[a]["name"] for a in sorted(participant.applet_ids) if a in data.applets],
+        "joined": min(joined).isoformat() if joined else None,
+        "schedule": "individual" if any(participant.individual.values()) else "default",
+        "removed": participant.is_removed_everywhere(),
+        "start": start.isoformat() if start else None,
+        "startSource": source or None,
+    }
+
+
 def _participant_sub(participant: Participant, data: StudyData) -> str:
     parts = [part for part in (participant.nickname, participant.tag) if part]
     if len(data.applets) > 1:
@@ -520,7 +536,19 @@ def _fixed(data: StudyData, params: ViewParams) -> GridResult:
 
 
 def _grid_by_bucket(
-    view, data, params, computed, entities, groups, columns, *, bucket_of, notes, row_sub=None, extra_params=None
+    view,
+    data,
+    params,
+    computed,
+    entities,
+    groups,
+    columns,
+    *,
+    bucket_of,
+    notes,
+    row_sub=None,
+    row_meta=None,
+    extra_params=None,
 ) -> GridResult:
     col_index = {column["key"]: index for index, column in enumerate(columns)}
     entity_by_key = {entity.key: entity for entity in entities}
@@ -561,6 +589,7 @@ def _grid_by_bucket(
                 "key": participant.key,
                 "label": participant.secret_id,
                 "sub": row_sub(participant) if row_sub else _participant_sub(participant, data),
+                "meta": row_meta(participant) if row_meta else _participant_meta(participant, data),
                 "cells": [cell.to_json(params.late_counts_as_done) if cell is not None else None for cell in cells],
                 "summary": _row_summary(
                     cells, params.late_counts_as_done, _next_due(occurrences_by_participant.get(participant.key, []))
@@ -686,6 +715,10 @@ def _rolling(data: StudyData, params: ViewParams, config_manual: dict[str, str] 
         start_text = f"day 1 = {start.isoformat()} ({source})" if start else "no start date"
         return f"{start_text} · {base}" if base else start_text
 
+    def row_meta(participant: Participant) -> dict:
+        start, source = starts.get(participant.key, (None, ""))
+        return _participant_meta(participant, data, start, source)
+
     return _grid_by_bucket(
         "rolling",
         data,
@@ -697,6 +730,7 @@ def _rolling(data: StudyData, params: ViewParams, config_manual: dict[str, str] 
         bucket_of=bucket_of,
         notes=notes,
         row_sub=row_sub,
+        row_meta=row_meta,
         extra_params={"first": first.isoformat(), "last": (first + timedelta(days=params.study_days - 1)).isoformat()},
     )
 
@@ -769,6 +803,7 @@ def _cross(data: StudyData, params: ViewParams) -> GridResult:
                 "key": participant.key,
                 "label": participant.secret_id,
                 "sub": _participant_sub(participant, data),
+                "meta": _participant_meta(participant, data),
                 "cells": [cell.to_json(True) if cell is not None else None for cell in cells],
                 "summary": summary,
             }
@@ -853,6 +888,14 @@ def _individual(data: StudyData, params: ViewParams) -> GridResult:
                     "sub": "individual schedule"
                     if any(o.individual for o in own_occurrences if o.entity == entity.key)
                     else "default schedule",
+                    "meta": {
+                        "kind": "activity",
+                        "applet": entity.applet_name,
+                        "activityKind": entity.kind,
+                        "schedule": "individual"
+                        if any(o.individual for o in own_occurrences if o.entity == entity.key)
+                        else "default",
+                    },
                     "cells": [cell.to_json(params.late_counts_as_done) for cell in cells],
                     "summary": _row_summary(
                         cells,
@@ -906,6 +949,7 @@ def _individual(data: StudyData, params: ViewParams) -> GridResult:
                 "key": participant.key,
                 "label": participant.secret_id,
                 "sub": f"{schedule} · {base}" if base else schedule,
+                "meta": _participant_meta(participant, data),
                 "cells": [cell.to_json(params.late_counts_as_done) for cell in cells],
                 "summary": _row_summary(
                     cells, params.late_counts_as_done, _next_due(occurrences_by_participant.get(participant.key, []))
@@ -1045,4 +1089,132 @@ def long_csv(result: GridResult) -> str:
                         "submit_id": completion["submitId"],
                     }
                 )
+    return out.getvalue()
+
+
+CELL_COLUMNS = [
+    "participant",
+    "column",
+    "column_group",
+    "column_label",
+    "applet",
+    "activity",
+    "expected",
+    "done",
+    "late",
+    "partly_done",
+    "missed",
+    "open_or_upcoming",
+    "unscheduled",
+    "status",
+    "first_completion",
+]
+
+COUNT_FIELDS = [
+    ("expected", "e"),
+    ("done", "d"),
+    ("late", "l"),
+    ("partly_done", "p"),
+    ("missed", "m"),
+    ("open_or_upcoming", "u"),
+    ("unscheduled", "x"),
+]
+
+
+def _column_parts(column: dict) -> tuple[str, str]:
+    """(applet, activity) of a column; the activity label without the applet prefix."""
+    applet = column.get("applet") or ""
+    label = column.get("label") or ""
+    if column.get("entity") is None:
+        return "", ""  # a day column of the individual view: all activities folded in
+    prefix = f"{applet}: " if applet else ""
+    return applet, label[len(prefix) :] if prefix and label.startswith(prefix) else label
+
+
+def cells_csv(grid: dict) -> str:
+    """The grid as data: one row per participant (or activity, in a focused timeline) and column."""
+    out = io.StringIO()
+    columns = list(CELL_COLUMNS)
+    if grid["params"].get("focus"):
+        columns[0] = "row"
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(columns)
+    groups = {group["key"]: group["label"] for group in grid.get("groups") or []}
+    for row in grid["rows"]:
+        for column, cell in zip(grid["columns"], row["cells"], strict=True):
+            applet, activity = _column_parts(column)
+            base = [
+                row["label"],
+                column["key"],
+                groups.get(column.get("group"), ""),
+                column["label"],
+                applet,
+                activity,
+            ]
+            if cell is None:
+                writer.writerow(base + [""] * len(COUNT_FIELDS) + ["not_in_applet", ""])
+                continue
+            writer.writerow(base + [cell[short] for _, short in COUNT_FIELDS] + [cell["s"], cell.get("t", "")])
+    return out.getvalue()
+
+
+def rows_csv(grid: dict) -> str:
+    """One row per participant with their totals (or per activity, in a focused timeline)."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    totals = [name for name, _ in COUNT_FIELDS]
+    focused = bool(grid["params"].get("focus"))
+    if focused:
+        writer.writerow(["activity", "applet", "kind", "schedule", *totals, "adherence", "last_completion", "next_due"])
+    else:
+        writer.writerow(
+            [
+                "participant",
+                "nickname",
+                "tag",
+                "applets",
+                "joined",
+                "schedule",
+                "removed",
+                "start_date",
+                "start_source",
+                *totals,
+                "adherence",
+                "last_completion",
+                "next_due",
+            ]
+        )
+    for row in grid["rows"]:
+        meta = row.get("meta") or {}
+        summary = row["summary"]
+        counts = [summary.get(short, "") for _, short in COUNT_FIELDS]
+        pct = summary.get("pct")
+        tail = [f"{pct:.3f}" if pct is not None else "", summary.get("last") or "", summary.get("next") or ""]
+        if focused:
+            writer.writerow(
+                [
+                    row["label"],
+                    meta.get("applet", ""),
+                    meta.get("activityKind", ""),
+                    meta.get("schedule", ""),
+                    *counts,
+                    *tail,
+                ]
+            )
+        else:
+            writer.writerow(
+                [
+                    row["label"],
+                    meta.get("nickname", ""),
+                    meta.get("tag", ""),
+                    ", ".join(meta.get("applets") or []),
+                    meta.get("joined") or "",
+                    meta.get("schedule", ""),
+                    "yes" if meta.get("removed") else "no",
+                    meta.get("start") or "",
+                    meta.get("startSource") or "",
+                    *counts,
+                    *tail,
+                ]
+            )
     return out.getvalue()
