@@ -121,6 +121,8 @@ class RevealBody(BaseModel):
 class DashboardExportBody(BaseModel):
     outputDir: str
     params: dict[str, str] = Field(default_factory=dict)  # the same query parameters as the view
+    gridJson: bool = True  # also save the grid payload as JSON
+    workbook: bool = True  # also save an Excel workbook with one sheet per file
 
 
 # -- app ----------------------------------------------------------------------
@@ -633,6 +635,8 @@ def create_app(
                 data_info=data_info,
                 result=result,
                 output=output,
+                grid_json=body.gridJson,
+                workbook=body.workbook,
             ),
         )
         return {"jobId": job.id}

@@ -500,14 +500,40 @@ def test_export_job_writes_json_and_csvs(make_client, tmp_path):
     folder = Path(result["folder"])
     assert folder.name.startswith("dashboard_EMA_pilot_fixed_") and result["view"] == "fixed"
     assert sorted(p.name for p in folder.iterdir()) == [
+        "dashboard.xlsx",
         "dashboard_cells.csv",
         "dashboard_grid.csv",
+        "dashboard_grid.json",
         "export_info.json",
         "occurrences.csv",
         "participants.csv",
     ]
     assert result["files"] == sorted(p.name for p in folder.iterdir())
     assert result["counts"]["rows"] == 3 and result["counts"]["columns"] == 14
+
+    # The JSON copy is exactly what the page renders for the same parameters.
+    grid_json = json.loads((folder / "dashboard_grid.json").read_text())
+    assert grid_json == view(client, study["id"], **params)
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(folder / "dashboard.xlsx")
+    assert workbook.sheetnames == ["Info", "Grid", "Cells", "Participants", "Occurrences"]
+    info_sheet = workbook["Info"]
+    fields = {row[0].value: row[1].value for row in info_sheet.iter_rows(min_row=2) if row[0].value}
+    assert fields["study.name"] == "EMA pilot" and fields["view.kind"] == "fixed"
+    assert fields["done"] == "Completed", "the status legend is on the Info sheet"
+    cells_sheet = workbook["Cells"]
+    assert cells_sheet.max_row == 1 + 3 * 14 and cells_sheet["A1"].value == "participant"
+    assert isinstance(cells_sheet["G2"].value, int), "counts are numbers, not text"
+    grid_sheet = workbook["Grid"]
+    assert grid_sheet["A2"].value == "Participant" and grid_sheet["A3"].value == "P001"
+    header = [grid_sheet.cell(row=2, column=c).value for c in range(4, 4 + 14)]
+    assert header[:2] == ["Morning", "Evening"], "column labels without the applet prefix"
+    done_cell = grid_sheet.cell(row=3, column=4)  # P001, Morning, day -10
+    assert done_cell.value == "1/1" and done_cell.fill.fgColor.rgb.endswith("D7F1D7")
+    participants_sheet = workbook["Participants"]
+    assert participants_sheet["A2"].value == "P001" and participants_sheet.freeze_panes == "A2"
 
     info = json.loads((folder / "export_info.json").read_text())
     assert info["study"]["name"] == "EMA pilot" and info["study"]["aliases"] == {"p002x": "P002"}
@@ -517,9 +543,9 @@ def test_export_job_writes_json_and_csvs(make_client, tmp_path):
     assert info["data"]["participants"] == 5 and [a["name"] for a in info["data"]["applets"]] == ["EMA Study", "Intake"]
     assert info["summary"]["participants"] == 3 and info["summary"]["adherence"] is not None
     assert {s["status"] for s in info["statuses"]} >= {"done", "missed", "upcoming"}
-    assert info["files"]["cells"] == "dashboard_cells.csv" and set(info["columns"]) == set(info["files"].values()) - {
-        "export_info.json"
-    }
+    assert info["files"]["cells"] == "dashboard_cells.csv"
+    assert set(info["columns"]) == set(info["files"].values()) - {"export_info.json"}
+    assert info["files"]["workbook"] == "dashboard.xlsx" and info["files"]["gridJson"] == "dashboard_grid.json"
 
     cells = read_rows(folder / "dashboard_cells.csv")
     assert len(cells) == 3 * 14
@@ -600,6 +626,45 @@ def test_export_job_rolling_and_focus_variants(make_client, tmp_path):
     assert bad.status_code == 400
     missing = client.post(f"/api/dashboard/studies/{study['id']}/export-job", json={"outputDir": "", "params": {}})
     assert missing.status_code == 400 and "folder" in missing.json()["error"]
+
+
+def test_export_job_without_the_optional_files(make_client, tmp_path, monkeypatch):
+    client = make_client()
+    study = loaded_study(client)
+    plain = client.post(
+        f"/api/dashboard/studies/{study['id']}/export-job",
+        json={"outputDir": str(tmp_path / "out"), "params": {"view": "cross"}, "workbook": False, "gridJson": False},
+    )
+    job = wait_for(client, plain.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    folder = Path(job["result"]["folder"])
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "dashboard_cells.csv",
+        "dashboard_grid.csv",
+        "export_info.json",
+        "occurrences.csv",
+        "participants.csv",
+    ]
+    info = json.loads((folder / "export_info.json").read_text())
+    assert "workbook" not in info["files"] and "gridJson" not in info["files"]
+
+    # Without openpyxl the workbook is skipped with a warning, and the rest is still written.
+    from curious_download.webapp import runners
+
+    def no_openpyxl(*args, **kwargs):
+        raise ImportError("No module named 'openpyxl'")
+
+    monkeypatch.setattr(runners, "write_workbook", no_openpyxl)
+    started = client.post(
+        f"/api/dashboard/studies/{study['id']}/export-job",
+        json={"outputDir": str(tmp_path / "out2"), "params": {"view": "cross"}},
+    )
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    assert any("openpyxl" in warning for warning in job["warnings"])
+    folder = Path(job["result"]["folder"])
+    assert not (folder / "dashboard.xlsx").exists() and (folder / "dashboard_grid.json").exists()
+    assert "workbook" not in json.loads((folder / "export_info.json").read_text())["files"]
 
 
 def test_rows_carry_structured_metadata(make_client):

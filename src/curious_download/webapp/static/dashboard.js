@@ -801,6 +801,8 @@
     startJob("dash-export", "dash-error", `/api/dashboard/studies/${dash.current.id}/export-job`, {
       outputDir: $("dash-output").value,
       params: Object.fromEntries(viewQuery().entries()),
+      workbook: $("dash-export-xlsx").checked,
+      gridJson: $("dash-export-json").checked,
     });
   };
 

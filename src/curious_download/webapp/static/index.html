@@ -434,6 +434,14 @@
                 <button class="primary" id="dash-export" type="button">Export dashboard</button>
               </span>
             </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="dash-export-xlsx" checked>
+              Also write an Excel workbook (<code>dashboard.xlsx</code>: one sheet per file, with the grid coloured as here)
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="dash-export-json" checked>
+              Also write the grid as JSON (<code>dashboard_grid.json</code>: exactly what this page renders)
+            </label>
             <p class="fineprint">Writes a folder with <code>export_info.json</code> (study set-up, view settings, when
               the data was loaded, counts, the status legend), <code>dashboard_cells.csv</code> (one row per participant
               and column), <code>dashboard_grid.csv</code> (as shown), <code>participants.csv</code> (totals per

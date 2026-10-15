@@ -252,6 +252,8 @@ button:
 | `dashboard_grid.csv` | The grid as shown, one column per cell, for reading rather than analysis. |
 | `participants.csv` | One row per participant: nickname, tag, applets, the day they were added, default or individual schedule, start date and its source (rolling view), totals, adherence, last completion, next due. In a focused timeline this is `activities.csv`, one row per activity. |
 | `occurrences.csv` | One row per expected occurrence and per completion of it: participant, applet, activity, day, time window, status, schedule (default or individual), periodicity, completion times, whether it was in the window, submission ID. The same content as the click-through details. |
+| `dashboard.xlsx` (optional, on by default) | The same content as one Excel workbook: an **Info** sheet (the metadata and the status legend), a **Grid** sheet coloured as in the app, and one sheet per CSV with numbers as numbers, frozen headers, and filters. Needs the `openpyxl` package, which installs with the tool; if it is missing the workbook is skipped with a warning. |
+| `dashboard_grid.json` (optional, on by default) | The grid exactly as the page renders it: columns, rows with cells `{e, d, l, p, m, u, x, s, t}`, totals, legend, notes, and the view parameters. For re-rendering or further processing without the CSVs. |
 
 **Quick CSV of this grid** downloads `dashboard_grid.csv` alone through the browser.
 

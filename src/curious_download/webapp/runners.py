@@ -13,6 +13,7 @@ from ..cli import _equivalent_command, dictionary_command
 from ..client import ApiError, CuriousClient, Participant
 from ..crypto import AppletDecryptor
 from ..csvout import file_slug, write_csv
+from ..dashboard.excel import write_workbook
 from ..dashboard.views import GridResult, cells_csv, grid_csv, long_csv, rows_csv
 from ..dictionary import INDEX_COLUMNS, build_dictionaries, fetch_history, write_dictionaries
 from ..export import DEFAULT_PAGE_SIZE, ExportFilters, build_export, download_answers, write_jsonl
@@ -307,6 +308,7 @@ DASHBOARD_FILES = {
     "rows": "participants.csv",
     "occurrences": "occurrences.csv",
 }
+OPTIONAL_DASHBOARD_FILES = {"gridJson": "dashboard_grid.json", "workbook": "dashboard.xlsx"}
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -323,8 +325,14 @@ def run_dashboard_export(
     data_info: dict,
     result: GridResult,
     output: Path,
+    grid_json: bool = True,
+    workbook: bool = True,
 ) -> dict:
-    """Write a computed dashboard view as a folder of CSVs plus a JSON describing them."""
+    """Write a computed dashboard view as a folder of CSVs plus a JSON describing them.
+
+    With `grid_json`, the exact payload the page renders is saved too; with `workbook`, an Excel
+    file with one sheet per CSV and a coloured copy of the grid.
+    """
     grid = result.grid
     params = grid["params"]
     focused = bool(params.get("focus"))
@@ -334,6 +342,10 @@ def run_dashboard_export(
     files = dict(DASHBOARD_FILES)
     if focused:
         files["rows"] = "activities.csv"
+    if grid_json:
+        files["gridJson"] = OPTIONAL_DASHBOARD_FILES["gridJson"]
+    if workbook:
+        files["workbook"] = OPTIONAL_DASHBOARD_FILES["workbook"]
 
     cells = cells_csv(grid)
     rows = rows_csv(grid)
@@ -385,7 +397,35 @@ def run_dashboard_export(
             files["occurrences"]: "one row per expected occurrence and per completion of it, with the time window",
         },
     }
+    if grid_json:
+        info["columns"][files["gridJson"]] = (
+            "the grid exactly as the app renders it: columns, rows with cells {e, d, l, p, m, u, x, s, t}, "
+            "totals, legend, notes, and the view parameters"
+        )
+        (folder / files["gridJson"]).write_text(json.dumps(grid, indent=2, ensure_ascii=False))
+    if workbook:
+        info["columns"][files["workbook"]] = (
+            "the same content as one Excel workbook: Info, Grid (coloured as in the app), and one sheet per CSV"
+        )
     (folder / files["info"]).write_text(json.dumps(info, indent=2, ensure_ascii=False))
+    if workbook:
+        job.progress(stage="Writing the Excel workbook")
+        try:
+            write_workbook(
+                folder / files["workbook"],
+                info=info,
+                grid=grid,
+                tables={"Cells": cells, "Activities" if focused else "Participants": rows, "Occurrences": occurrences},
+            )
+        except ImportError:
+            files.pop("workbook")
+            info["columns"].pop(OPTIONAL_DASHBOARD_FILES["workbook"], None)
+            info["files"] = files
+            (folder / files["info"]).write_text(json.dumps(info, indent=2, ensure_ascii=False))
+            job.warn(
+                "The Excel workbook was skipped: the openpyxl package is not installed. "
+                "Run `pip install -e <path to curious-data-download>` again to add it."
+            )
     for note in grid.get("notes") or []:
         job.warn(note)
     return {
