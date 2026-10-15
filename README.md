@@ -268,7 +268,7 @@ ask for them; their data is still on the server.
 Above the grid, **Participants** opens a picker: a table of everyone loaded with nickname, tag,
 applets, submission count, adherence, and last completion, which you can search, filter by data,
 tag, or applet, sort, and tick or untick in bulk. **Activities** offers *All* or *Choose…* with a
-tickable list, **only participants with data** hides everyone who has not completed anything, and
+tickable list and buttons to tick or untick everything, remove all flows, or remove all activities, **only participants with data** hides everyone who has not completed anything, and
 **hide empty columns** (on by default) drops every column where nothing was scheduled or done for
 anyone, so a study that mixes a daily schedule with one-off activities shows each day's own
 activities only. The choices are saved on the study, so they are still in place the next time you

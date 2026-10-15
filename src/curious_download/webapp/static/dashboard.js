@@ -371,6 +371,7 @@
     }
     for (const item of items) {
       const checkbox = el("input", { type: "checkbox", value: item.key });
+      checkbox.dataset.kind = item.key.includes(":flow:") ? "flow" : "activity";
       if (previousKeys.has(item.key)) {
         checkbox.checked = previouslyChecked.has(item.key); // keep what the user set
       } else {
@@ -785,12 +786,17 @@
     dash.onlyWithData = $("dash-only-with-data").checked;
     persistChoices().then(loadView);
   };
-  $("dash-entities-all").onclick = () => {
-    for (const box of $("dash-entities-list").querySelectorAll(".options input")) box.checked = true;
-  };
-  $("dash-entities-none").onclick = () => {
-    for (const box of $("dash-entities-list").querySelectorAll(".options input")) box.checked = false;
-  };
+  // Tick all / Untick all / Remove flows / Remove activities, for both activity lists.
+  for (const button of document.querySelectorAll("button[data-entities]")) {
+    button.onclick = () => {
+      const boxes = $(button.dataset.entities).querySelectorAll(".options input");
+      const kind = button.dataset.tick || button.dataset.untick;
+      const tick = Boolean(button.dataset.tick);
+      for (const box of boxes) {
+        if (kind === "all" || box.dataset.kind === kind) box.checked = tick;
+      }
+    };
+  }
 
   function syncControlVisibility() {
     const view = $("dash-view").value;
@@ -808,6 +814,7 @@
     const multi = new Set(entities.map((entity) => entity.applet)).size > 1;
     for (const entity of entities) {
       const checkbox = el("input", { type: "checkbox", value: entity.key });
+      checkbox.dataset.kind = entity.kind;
       checkbox.checked = !dash.entityChoice || dash.entityChoice.includes(entity.key);
       options.append(el("label", {}, checkbox, " ", multi ? `${entity.applet}: ${entity.label}` : entity.label));
     }

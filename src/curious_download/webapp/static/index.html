@@ -290,6 +290,12 @@
           <div class="checklist" id="dash-editor-entities">
             <input type="search" placeholder="Search activities…">
             <div class="options"></div>
+            <div class="checklist-buttons">
+              <button class="ghost" type="button" data-entities="dash-editor-entities" data-tick="all">Tick all</button>
+              <button class="ghost" type="button" data-entities="dash-editor-entities" data-untick="all">Untick all</button>
+              <button class="ghost" type="button" data-entities="dash-editor-entities" data-untick="flow">Remove flows</button>
+              <button class="ghost" type="button" data-entities="dash-editor-entities" data-untick="activity">Remove activities</button>
+            </div>
           </div>
 
           <label>Participants to load
@@ -451,8 +457,10 @@
             <input type="search" placeholder="Search activities…">
             <div class="options"></div>
             <div class="checklist-buttons">
-              <button class="ghost" id="dash-entities-all" type="button">Tick all</button>
-              <button class="ghost" id="dash-entities-none" type="button">Untick all</button>
+              <button class="ghost" type="button" data-entities="dash-entities-list" data-tick="all">Tick all</button>
+              <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="all">Untick all</button>
+              <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="flow">Remove flows</button>
+              <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="activity">Remove activities</button>
               <button class="primary" id="dash-entities-apply" type="button">Apply</button>
             </div>
           </div>
