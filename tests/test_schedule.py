@@ -337,3 +337,43 @@ def test_flow_member_activities_get_no_column_of_their_own():
     assert labels == ["Morning", "Evening", "Weekly"]
     data.completions = [completion("a", "w1", datetime(2026, 10, 3, 10))]  # done on its own, outside the flow
     assert [e.name for e in data.visible_entities()] == ["Morning", "Evening", "W1", "Weekly"]
+
+
+def test_cache_roundtrip_keeps_every_field(tmp_path, monkeypatch):
+    from curious_download import cli
+    from curious_download.dashboard import cache
+
+    monkeypatch.setattr(cli, "SETTINGS_PATH", tmp_path / "settings.json")
+    data = study()
+    data.completions = [
+        completion("a", "morning", datetime(2026, 10, 1, 9), event="ev-m", scheduled=datetime(2026, 10, 1, 8)),
+        completion("b", "w1", datetime(2026, 10, 5, 10), flow="weekly", submit="sub-1"),
+    ]
+    data.participants["P001"].last_completion = datetime(2026, 10, 5, 14)
+    data.rules[APPLET].append(
+        rule("ONCE", event_id="once", selected_date=date(2026, 10, 12), active_from=date(2026, 10, 1))
+    )
+    data.schedule_available[APPLET] = True
+    data.history_available[APPLET] = True
+    data.warnings = ["a note"]
+    data.individual_events[APPLET] = {"u1": [{"id": "e1", "periodicity": {"type": "DAILY"}}]}
+    path = cache.save_cache(data, email="Researcher@Example.org")
+    assert path.exists()
+
+    restored = cache.load_cache("s", server="https://x/", email="researcher@example.org")
+    assert restored is not None
+    assert restored.loaded_at == data.loaded_at and restored.applets == data.applets
+    assert restored.entities == data.entities
+    assert restored.participants == data.participants
+    assert restored.completions == data.completions
+    assert restored.rules == data.rules
+    assert (restored.schedule_available, restored.history_available, restored.warnings) == (
+        data.schedule_available,
+        data.history_available,
+        data.warnings,
+    )
+    assert restored.individual_events == data.individual_events
+    assert cache.load_cache("s", server="https://x", email="other@example.org") is None
+    assert cache.load_cache("s", server="https://y", email="researcher@example.org") is None
+    cache.delete_cache("s")
+    assert cache.load_cache("s", server="https://x", email="researcher@example.org") is None

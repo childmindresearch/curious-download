@@ -74,11 +74,27 @@ def _api_day(text: str | None) -> str | None:
     return datetime.strptime(text, "%Y-%m-%d").astimezone().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+# How far back a refresh re-reads completions, in case some arrived while the last load ran.
+REFRESH_OVERLAP = timedelta(hours=1)
+
+
 class StudyLoader:
-    def __init__(self, client: CuriousClient, config: StudyConfig, progress: Progress | None = None):
+    def __init__(
+        self,
+        client: CuriousClient,
+        config: StudyConfig,
+        progress: Progress | None = None,
+        previous: StudyData | None = None,
+    ):
+        """With `previous` (the data of an earlier load), only what changed since is fetched: new
+        completions, new participants, the default schedule, and the individual schedules the
+        history says have changed; everything else is taken over from `previous`."""
         self.client = client
         self.config = config
         self.progress = progress or _noop
+        self.previous = previous
+        self.since: datetime | None = previous.loaded_at - REFRESH_OVERLAP if previous else None
+        self._reused_individual = 0
         self.data = StudyData(
             study_id=config.id, server=config.server, loaded_at=datetime.now(UTC).replace(tzinfo=None)
         )
@@ -125,8 +141,53 @@ class StudyLoader:
             self._load_schedule(applet_id, applet_name, selected)
             self.progress(stage=f"{prefix}reading completions of {applet_name}", done=0, total=None)
             self._load_completions(applet_id, applet_name, selected)
+        if self.previous is not None:
+            self._merge_previous()
         self._drop_unselected(selected)
         return self.data
+
+    def _merge_previous(self) -> None:
+        """Keep what the earlier load knew that this refresh did not fetch again."""
+        previous = self.previous
+        assert previous is not None
+        for key, entity in previous.entities.items():
+            if key not in self.data.entities and entity.applet_id in self.data.applets:
+                self.data.entities[key] = entity
+        seen = {completion.answer_id for completion in self.data.completions}
+        kept = 0
+        for completion in previous.completions:
+            if completion.answer_id in seen or completion.applet_id not in self.data.applets:
+                continue
+            if completion.participant not in self.data.participants:
+                # No longer in the participant list: kept as a removed participant, as answers-only people are.
+                participant = self._participant(completion.participant)
+                participant.subject_ids.setdefault(completion.applet_id, completion.participant)
+                participant.removed[completion.applet_id] = True
+            self.data.completions.append(completion)
+            kept += 1
+        for participant in self.data.participants.values():
+            participant.last_completion = None
+            participant.tz_offset = None
+        for completion in self.data.completions:
+            participant = self.data.participants.get(completion.participant)
+            if participant and (
+                participant.last_completion is None or completion.created_utc > participant.last_completion
+            ):
+                participant.last_completion = completion.created_utc
+                participant.tz_offset = completion.tz_offset
+        self.progress(detail=f"{kept:,} completions kept from the last load")
+        if self._reused_individual and not any(self.data.history_available.values()):
+            self.data.warnings.append(
+                f"The individual schedules of {self._reused_individual} participant(s) were taken from the last load "
+                "(without the schedule history there is no way to tell which changed); use Reload all to re-read them."
+            )
+
+    def _since_api(self, from_date: str | None) -> str | None:
+        """The later of the study's data-from day and the refresh point, as the API wants it."""
+        if self.since is None:
+            return from_date
+        since = self.since.strftime("%Y-%m-%dT%H:%M:%S")
+        return max(from_date, since) if from_date else since
 
     # -- which participants ---------------------------------------------------------------
 
@@ -138,7 +199,9 @@ class StudyLoader:
         """
         selected: set[str] | None = set(self.config.participants) if self.config.participants else None
         if self.config.only_with_data:
-            with_data: set[str] = set()
+            with_data: set[str] = (
+                {completion.participant for completion in self.previous.completions} if self.previous else set()
+            )
             known = True
             for applet_id, applet in self.data.applets.items():
                 counts = self._submission_counts(applet_id, applet["name"])
@@ -174,7 +237,7 @@ class StudyLoader:
     def _submission_counts(self, applet_id: str, applet_name: str) -> dict[str, int] | None:
         """Completed activities per target subject from the submission metadata; None if unavailable."""
         reviewer = {e.id for e in self.data.entities.values() if e.applet_id == applet_id and e.reviewable}
-        from_date = _api_day(self.config.data_from)
+        from_date = self._since_api(_api_day(self.config.data_from))
         counts: dict[str, int] = {}
 
         def fetch(page: int, limit: int) -> dict:
@@ -380,33 +443,48 @@ class StudyLoader:
             )
             return
 
+        history = None
+        self._changed_users: set[str] = set()
+        if self.config.use_history:
+            history = self._load_history(applet_id, applet_name, selected)
+        else:
+            self.data.history_available[applet_id] = False
+
+        previous_events = (self.previous.individual_events.get(applet_id, {}) if self.previous else {}) or {}
         with_individual = [
             (p, p.user_ids.get(applet_id))
             for p in self.data.participants.values()
             if p.individual.get(applet_id) and p.user_ids.get(applet_id) and (selected is None or p.key in selected)
         ]
+        kept_events: dict[str, list[dict]] = {}
         for number, (participant, user_id) in enumerate(with_individual, start=1):
-            self.progress(detail=f"individual schedule {number} of {len(with_individual)}: {participant.secret_id}")
-            try:
-                events = self.client.applet_events(applet_id, respondent_id=user_id)
-            except ApiError as e:
-                if e.status_code not in (400, 403, 404, *SERVER_ERRORS):
-                    raise _with_context(e, f"reading the individual schedule of {participant.secret_id}") from e
-                self.data.warnings.append(
-                    f"{applet_name}: individual schedule of {participant.secret_id} not readable ({e.message}); "
-                    "the default schedule is assumed for them."
-                )
-                continue
+            reuse = (
+                self.previous is not None
+                and user_id in previous_events
+                and user_id not in self._changed_users
+                and (history is not None or not self.data.history_available.get(applet_id, False))
+            )
+            if reuse:
+                events = previous_events[user_id]
+                self._reused_individual += 1
+            else:
+                self.progress(detail=f"individual schedule {number} of {len(with_individual)}: {participant.secret_id}")
+                try:
+                    events = self.client.applet_events(applet_id, respondent_id=user_id)
+                except ApiError as e:
+                    if e.status_code not in (400, 403, 404, *SERVER_ERRORS):
+                        raise _with_context(e, f"reading the individual schedule of {participant.secret_id}") from e
+                    self.data.warnings.append(
+                        f"{applet_name}: individual schedule of {participant.secret_id} not readable ({e.message}); "
+                        "the default schedule is assumed for them."
+                    )
+                    continue
+            kept_events[user_id] = events
             for event in events:
                 rule = rule_from_event(applet_id, event)
                 if rule:
                     rules.append(rule)
-
-        if not self.config.use_history:
-            self.data.history_available[applet_id] = False
-            self.data.rules[applet_id] = rules
-            return
-        history = self._load_history(applet_id, applet_name, selected)
+        self.data.individual_events[applet_id] = kept_events
         self.data.rules[applet_id] = bound_current_rules(rules, history) if history is not None else rules
 
     def _load_history(self, applet_id: str, applet_name: str, selected: set[str] | None) -> list | None:
@@ -429,6 +507,10 @@ class StudyLoader:
                     if key not in seen:
                         seen.add(key)
                         rows.append(row)
+                    if self.since is not None and row.get("userId"):
+                        created = _utc(row.get("eventVersionCreatedAt"))
+                        if created and created >= self.since:
+                            self._changed_users.add(str(row["userId"]))
                 where = f"{len(batch)} participants, " if batch and batch != [NOBODY] else ""
                 self.progress(detail=f"schedule history: {where}{fetched:,} of {total:,} event versions")
 
@@ -469,7 +551,7 @@ class StudyLoader:
 
     def _load_completions(self, applet_id: str, applet_name: str, selected: set[str] | None) -> None:
         seen: set[str] = set()
-        from_date = _api_day(self.config.data_from)
+        from_date = self._since_api(_api_day(self.config.data_from))
         subjects = self._subjects_for(applet_id, selected)
         in_applet = sum(1 for p in self.data.participants.values() if applet_id in p.subject_ids)
         doing = f"reading the completions of {applet_name}"
@@ -578,8 +660,14 @@ class StudyLoader:
         return completion
 
 
-def load_study(client: CuriousClient, config: StudyConfig, progress: Progress | None = None) -> StudyData:
-    return StudyLoader(client, config, progress).load()
+def load_study(
+    client: CuriousClient,
+    config: StudyConfig,
+    progress: Progress | None = None,
+    previous: StudyData | None = None,
+) -> StudyData:
+    """Load a study; with `previous`, refresh it (fetch only what changed since that load)."""
+    return StudyLoader(client, config, progress, previous=previous).load()
 
 
 def host_tz_offset_minutes(now: datetime | None = None) -> int:

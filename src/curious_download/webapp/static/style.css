@@ -493,3 +493,5 @@ table.picker-table tr.no-data td { color: var(--muted); }
 table.picker-table tr:hover td { background: var(--accent-soft); }
 table.picker-table input { width: auto; margin: 0; }
 table.picker-table .empty { color: var(--muted); padding: 16px; text-align: center; }
+
+.dash-data-status { margin-top: 8px; }

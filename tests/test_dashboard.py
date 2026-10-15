@@ -6,6 +6,8 @@ import csv
 import io
 import json
 import time
+from datetime import datetime
+from datetime import time as clock
 from pathlib import Path
 
 import pytest
@@ -176,6 +178,7 @@ def test_load_reads_participants_schedules_and_completions(make_client):
         "completions": 16,
         "applets": 2,
         "activities": 7,
+        "mode": "full",
     }
     assert any("Intake" in warning and "schedule could not be read" in warning for warning in job["warnings"])
 
@@ -403,6 +406,122 @@ def test_an_unreadable_history_page_is_skipped(make_client, monkeypatch):
     assert any("rows 7–7 could not be read" in warning and "skipped" in warning for warning in job["warnings"])
     grid = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
     assert cell(grid, "P001", col(day(-10), MORNING_KEY))["s"] == "done", "the rest of the history was used"
+
+
+# -- keeping data between runs --------------------------------------------------------------------
+
+
+def test_data_is_restored_from_the_cache_after_a_restart(make_client, tmp_path):
+    first = make_client()
+    study = loaded_study(first)
+    assert (tmp_path / "dashboards" / "cache" / f"{study['id']}.json.gz").exists()
+
+    # A new app (same computer, same account): the study is there without asking the server for anything.
+    second = make_client()
+    status = second.get(f"/api/dashboard/studies/{study['id']}").json()
+    assert status["loaded"] and status["data"]["fromCache"] and status["data"]["completions"] == 16
+    grid = view(second, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-9).isoformat())
+    assert cell(grid, "P001", col(day(-10), MORNING_KEY))["s"] == "done"
+    assert not requests_to(second, "/data") and not requests_to(second, "/events")
+
+    # A refresh asks only for what is new.
+    started = second.post(f"/api/dashboard/studies/{study['id']}/load", json={"mode": "refresh"})
+    job = wait_for(second, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    assert job["title"] == "Dashboard refresh — EMA pilot"
+    assert job["result"]["mode"] == "refresh" and job["result"]["completions"] == 16
+    assert job["result"]["newCompletions"] == 0 and job["result"]["newParticipants"] == 0
+    exports = requests_to(second, "/data")
+    assert exports and all(r.url.params.get("fromDate") for r in exports), "completions since the last load only"
+    individual = [r for r in requests_to(second, "/events") if r.url.params.get("respondentId")]
+    assert individual == [], "P002's individual schedule did not change, so it was reused"
+    assert not second.get(f"/api/dashboard/studies/{study['id']}").json()["data"]["fromCache"]
+
+
+def test_cache_is_only_for_the_same_account_and_server(make_client, monkeypatch):
+    from curious_download.dashboard import cache
+
+    client = make_client()
+    study = loaded_study(client)
+    original = cache.load_cache
+    monkeypatch.setattr(
+        cache, "load_cache", lambda study_id, server, email: original(study_id, server=server, email="someone@else.org")
+    )
+    assert not make_client().get(f"/api/dashboard/studies/{study['id']}").json()["loaded"]
+    monkeypatch.setattr(
+        cache,
+        "load_cache",
+        lambda study_id, server, email: original(study_id, server="https://other.test", email=email),
+    )
+    assert not make_client().get(f"/api/dashboard/studies/{study['id']}").json()["loaded"]
+
+
+def test_refresh_picks_up_new_data_and_changed_schedules(make_client):
+    client = make_client()
+    study = loaded_study(client)
+    before = len(client.fake.requests)
+
+    # Meanwhile: a new participant with a completion, a new answer from P001, and P002's schedule edited.
+    new_user, new_subject = "u9u9u9u9-0000-4000-8000-000000000099", "s9s9s9s9-0000-4000-8000-000000000099"
+    client.fake.add_participant(new_user, new_subject, "P006")
+    today_morning = datetime.combine(day(0), clock(9, 0))
+    client.fake.add_answer(
+        "new-1",
+        MORNING,
+        new_subject,
+        "P006",
+        end=today_morning,
+        event=fake.EV_MORNING,
+        scheduled=datetime.combine(day(0), clock(8, 0)),
+    )
+    client.fake.add_answer(
+        "new-2",
+        MORNING,
+        fake.S1,
+        "P001",
+        end=datetime.combine(day(0), clock(9, 30)),
+        event=fake.EV_MORNING,
+        scheduled=datetime.combine(day(0), clock(8, 0)),
+    )
+    edited = dict(client.fake.individual_events[(EMA, fake.U2)][0], version="20261015-2")
+    client.fake.individual_events[(EMA, fake.U2)] = [edited]
+    client.fake.history.append(fake._history_row(edited, created=datetime.now(), name="Morning"))
+
+    started = client.post(f"/api/dashboard/studies/{study['id']}/load", json={"mode": "refresh"})
+    job = wait_for(client, started.json()["jobId"])
+    assert job["status"] == "done", job["error"]
+    assert job["result"]["newCompletions"] == 2 and job["result"]["newParticipants"] == 1
+    assert job["result"]["completions"] == 18 and job["result"]["participants"] == 7
+
+    fresh = client.fake.requests[before:]
+    individual = [
+        r.url.params.get("respondentId")
+        for r in fresh
+        if r.url.path.endswith("/events") and r.url.params.get("respondentId")
+    ]
+    assert individual == [fake.U2], "only the person whose schedule history changed is re-read"
+    exports = [r for r in fresh if r.url.path.endswith("/data")]
+    assert exports and all(r.url.params.get("fromDate") for r in exports)
+    status = client.get(f"/api/dashboard/studies/{study['id']}").json()
+    assert "P006" in {p["key"] for p in status["data"]["participantList"]}
+    today = view(client, study["id"], view="fixed", first=day(0).isoformat(), last=day(0).isoformat())
+    assert cell(today, "P006", col(day(0), MORNING_KEY))["d"] == 1
+    older = view(client, study["id"], view="fixed", first=day(-10).isoformat(), last=day(-10).isoformat())
+    assert cell(older, "P001", col(day(-10), MORNING_KEY))["s"] == "done", "completions from the first load were kept"
+
+
+def test_cache_is_dropped_when_the_study_changes_shape(make_client, tmp_path):
+    client = make_client()
+    study = loaded_study(client)
+    path = tmp_path / "dashboards" / "cache" / f"{study['id']}.json.gz"
+    assert path.exists()
+    client.post("/api/dashboard/studies", json={**study, "view": "cross"})
+    assert path.exists(), "a different view keeps the data"
+    client.post("/api/dashboard/studies", json={**study, "aliases": {}})
+    assert not path.exists(), "different aliases need a reload"
+    loaded_study(client)
+    client.delete(f"/api/dashboard/studies/{study['id']}")
+    assert not path.exists()
 
 
 # -- fixed view ----------------------------------------------------------------------------------

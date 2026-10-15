@@ -164,6 +164,8 @@ class FakeStudyServer:
         self.no_submissions_endpoint = no_submissions_endpoint
         # Like a firewall in front of the server: more ids than this in the URL gets an HTML 403 page.
         self.max_query_ids = max_query_ids
+        # Participants added after construction (tests simulate a study that grows between loads).
+        self.extra_respondents: list[dict] = []
 
         start, end = day(-10), day(5)
         self.events = {
@@ -329,6 +331,33 @@ class FakeStudyServer:
             "activityFlows": [],
         }  # fmt: skip
 
+    def add_participant(self, user_id: str, subject_id: str, secret: str, *, individual: bool = False) -> None:
+        """A new EMA participant, added after the fake was built (joined today)."""
+        self.extra_respondents.append(
+            {
+                "id": user_id,
+                "status": "approved",
+                "isAnonymousRespondent": False,
+                "details": [self._detail(EMA, subject_id, secret, "", 0, individual=individual)],
+            }
+        )
+
+    def add_answer(self, answer_id: str, activity: str, subject: str, secret: str, *, end: datetime, **kwargs) -> None:
+        """A completion that arrives after the fake was built, received now."""
+        row = self._row(EMA, answer_id, activity, subject, secret, end=end, **kwargs)
+        row["createdAt"] = _utc_iso(datetime.now())
+        self.answers[EMA].insert(0, row)
+
+    @staticmethod
+    def _detail(applet_id, subject, secret, nickname, created_offset, *, individual=False, deleted=False):
+        created = datetime.combine(day(created_offset), time(9, 0))
+        return {
+            "appletId": applet_id, "appletDisplayName": "x", "subjectId": subject, "respondentSecretId": secret,
+            "respondentNickname": nickname, "subjectTag": "Child", "subjectCreatedAt": _utc_iso(created),
+            "subjectUpdatedAt": _utc_iso(created), "subjectIsDeleted": deleted, "hasIndividualSchedule": individual,
+            "invitation": None, "roles": ["respondent"], "subjectFirstName": "", "subjectLastName": "",
+        }  # fmt: skip
+
     def respondents(self, applet_id: str) -> list[dict]:
         def detail(subject, secret, nickname, created_offset, *, individual=False, deleted=False, applet=applet_id):
             created = datetime.combine(day(created_offset), time(9, 0))
@@ -340,7 +369,7 @@ class FakeStudyServer:
             }  # fmt: skip
 
         if applet_id == EMA:
-            return [
+            return self.extra_respondents + [
                 {
                     "id": U1,
                     "status": "approved",

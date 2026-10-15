@@ -195,6 +195,17 @@ with any password, and are tied to the server you saved them on. Click **Load da
 everything from Curious; the data stays in memory until you log out, and every view is computed
 from it on the spot.
 
+### Keeping data between runs
+
+After a load, the study's data (participants, activities, schedules, and completion times; never
+answer content or passwords) is saved in `~/.config/curious-download/dashboards/cache/`, so the
+next time you start the app and log in with the same account the dashboard is there at once.
+**Refresh** then fetches only what changed since: completions received after the last load, new
+participants, the default schedule, and the individual schedules whose history shows a change.
+**Reload all** reads everything again; use it after a schedule change the history could not tell
+you about, or if something looks stale. Changing a study's applets, aliases, or "data from" day
+discards its saved data, and deleting the study deletes the file.
+
 ### The four kinds of dashboard
 
 | Kind | For studies where… | Columns |

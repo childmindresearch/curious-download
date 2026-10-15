@@ -32,6 +32,7 @@ from .. import __version__
 from ..cli import UsageError, _load_settings, _parse_day, _save_settings
 from ..client import EXPORT_ROLES, ApiError, CuriousClient, MfaRequiredError, Participant
 from ..crypto import AppletDecryptor, AppletPasswordError
+from ..dashboard import cache as study_cache
 from ..dashboard import config as studies
 from ..dashboard.loader import host_tz_offset_minutes, load_study, scan_participants, today_local
 from ..dashboard.views import GridResult, build, grid_csv, long_csv, view_params
@@ -63,6 +64,7 @@ class AppState:
         self.dashboards: dict = {}
         self.dashboard_views: dict = {}  # (study id, request signature) -> GridResult
         self.dashboard_jobs: dict[str, str] = {}  # study id -> job id of its latest load
+        self.dashboard_from_cache: set[str] = set()  # studies whose data came from disk, not this session
 
 
 # -- request bodies ----------------------------------------------------------
@@ -122,6 +124,10 @@ class DashboardScanBody(BaseModel):
     applets: list[dict] = Field(default_factory=list)  # [{ownerId, appletId, name}]
     aliases: dict[str, str] = Field(default_factory=dict)
     dataFrom: str | None = None
+
+
+class DashboardLoadBody(BaseModel):
+    mode: str = "full"  # "full": read everything again; "refresh": only what changed since the last load
 
 
 class DashboardExportBody(BaseModel):
@@ -506,9 +512,20 @@ def create_app(
             for p in sorted(data.participants.values(), key=lambda p: p.secret_id.lower())
         ]
 
-    def study_payload(config: studies.StudyConfig) -> dict:
+    def ensure_data(config: studies.StudyConfig):
+        """The study's loaded data: from this session, or restored from the last run's cache."""
         current = session()
         data = state.dashboards.get(config.id)
+        if data is None:
+            data = study_cache.load_cache(config.id, server=current.server, email=current.email)
+            if data is not None:
+                state.dashboards[config.id] = data
+                state.dashboard_from_cache.add(config.id)
+        return data
+
+    def study_payload(config: studies.StudyConfig) -> dict:
+        current = session()
+        data = ensure_data(config)
         job_id = state.dashboard_jobs.get(config.id)
         job = state.jobs.get(job_id) if job_id else None
         payload = {
@@ -522,6 +539,7 @@ def create_app(
             first, last = data.day_span()
             payload["data"] = {
                 "loadedAt": data.loaded_at.replace(tzinfo=UTC).astimezone().isoformat(timespec="seconds"),
+                "fromCache": config.id in state.dashboard_from_cache,
                 "participants": len(data.participants),
                 "completions": len(data.completions),
                 "applets": [
@@ -565,6 +583,8 @@ def create_app(
             config.data_from,
         ):
             state.dashboards.pop(config.id, None)
+            state.dashboard_from_cache.discard(config.id)
+            study_cache.delete_cache(config.id)
         for key in [key for key in state.dashboard_views if key[0] == config.id]:
             state.dashboard_views.pop(key, None)
         return study_payload(config)
@@ -579,6 +599,8 @@ def create_app(
         if not found:
             raise HTTPException(404, "No such study.")
         state.dashboards.pop(study_id, None)
+        state.dashboard_from_cache.discard(study_id)
+        study_cache.delete_cache(study_id)
         for key in [key for key in state.dashboard_views if key[0] == study_id]:
             state.dashboard_views.pop(key, None)
         return {"ok": True}
@@ -597,36 +619,54 @@ def create_app(
         return scan_participants(current.client, applets, aliases=body.aliases, data_from=body.dataFrom)
 
     @app.post("/api/dashboard/studies/{study_id}/load")
-    def dashboard_load(study_id: str):
+    def dashboard_load(study_id: str, body: DashboardLoadBody | None = None):
         current = session()
         config = study_or_404(study_id)
         running = state.dashboard_jobs.get(study_id)
         if running and (job := state.jobs.get(running)) and job.to_dict()["status"] == "running":
             return {"jobId": job.id}
-        client = current.client
+        mode = (body.mode if body else "full") or "full"
+        if mode not in ("full", "refresh"):
+            raise HTTPException(400, "mode must be 'full' or 'refresh'.")
+        previous = ensure_data(config) if mode == "refresh" else None
+        if mode == "refresh" and previous is None:
+            mode = "full"
+        client, email = current.client, current.email
 
         def run(job):
-            data = load_study(client, config, progress=job.progress)
+            data = load_study(client, config, progress=job.progress, previous=previous)
             state.dashboards[config.id] = data
+            state.dashboard_from_cache.discard(config.id)
             for key in [key for key in state.dashboard_views if key[0] == config.id]:
                 state.dashboard_views.pop(key, None)
+            try:
+                study_cache.save_cache(data, email=email)
+            except OSError as e:
+                job.warn(f"The data could not be saved for the next run: {e}")
             for warning in data.warnings:
                 job.warn(warning)
-            return {
+            result = {
                 "studyId": config.id,
+                "mode": mode,
                 "participants": len(data.participants),
                 "completions": len(data.completions),
                 "applets": len(data.applets),
                 "activities": len(data.visible_entities()),
             }
+            if previous is not None:
+                before = {completion.answer_id for completion in previous.completions}
+                result["newCompletions"] = sum(1 for c in data.completions if c.answer_id not in before)
+                result["newParticipants"] = sum(1 for key in data.participants if key not in previous.participants)
+            return result
 
-        job = state.jobs.start("dashboard", f"Dashboard data — {config.name}", run)
+        title = f"Dashboard {'refresh' if mode == 'refresh' else 'data'} — {config.name}"
+        job = state.jobs.start("dashboard", title, run)
         state.dashboard_jobs[study_id] = job.id
         return {"jobId": job.id}
 
     def dashboard_result(study_id: str, query: dict) -> tuple[studies.StudyConfig, GridResult]:
         config = study_or_404(study_id)
-        data = state.dashboards.get(study_id)
+        data = ensure_data(config)
         if data is None:
             raise HTTPException(409, "Load the study's data first.")
         host_tz = host_tz_offset_minutes()

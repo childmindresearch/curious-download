@@ -154,6 +154,9 @@ class StudyData:
     schedule_available: dict[str, bool] = field(default_factory=dict)
     history_available: dict[str, bool] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    # Individual events as the API returned them: applet id -> account id -> events. A refresh
+    # re-reads only the people whose schedule changed and reuses the rest from here.
+    individual_events: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
 
     def visible_entities(self) -> list[Entity]:
         """Activities and flows worth a column: not hidden, not reviewer-only, and not an activity that

@@ -134,7 +134,10 @@
     $("dash-edit").disabled = !dash.current;
     $("dash-delete").disabled = !dash.current;
     $("dash-load").disabled = !dash.current;
-    $("dash-load").textContent = dash.current && dash.current.loaded ? "Reload data" : "Load data";
+    $("dash-load").textContent = dash.current && dash.current.loaded ? "Refresh" : "Load data";
+    $("dash-load").title = dash.current && dash.current.loaded ? "Fetch only what changed since the last load" : "";
+    $("dash-reload").hidden = !(dash.current && dash.current.loaded);
+    updateDataStatus();
     $("dash-editor").hidden = true;
     if (!dash.current) {
       $("dash-board").hidden = true;
@@ -167,24 +170,42 @@
 
   // -- loading ------------------------------------------------------------------------------
 
-  $("dash-load").onclick = async () => {
+  function updateDataStatus() {
+    const status = $("dash-data-status");
+    const data = dash.current && dash.current.data;
+    if (!data) {
+      status.hidden = true;
+      return;
+    }
+    const loaded = new Date(data.loadedAt);
+    status.textContent =
+      `Data as of ${loaded.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` +
+      ` · ${n(data.participants)} participant(s), ${n(data.completions)} completion(s)` +
+      (data.fromCache ? " · restored from the last run; Refresh fetches what changed since" : "");
+    status.hidden = false;
+  }
+
+  async function startLoad(mode) {
     if (!dash.current) return;
     $("dash-error").className = "error";
     setError("dash-error", "");
     try {
-      const { jobId } = await post(`/api/dashboard/studies/${dash.current.id}/load`);
+      const { jobId } = await post(`/api/dashboard/studies/${dash.current.id}/load`, { mode });
       refreshJobs();
       pollLoad(jobId);
     } catch (error) {
       setError("dash-error", error.message);
     }
-  };
+  }
+  $("dash-load").onclick = () => startLoad(dash.current && dash.current.loaded ? "refresh" : "full");
+  $("dash-reload").onclick = () => startLoad("full");
 
   function pollLoad(jobId) {
     clearInterval(dash.pollTimer);
     $("dash-loading").hidden = false;
     $("dash-board").hidden = true;
     $("dash-load").disabled = true;
+    $("dash-reload").disabled = true;
     const tick = async () => {
       let job;
       try {
@@ -204,6 +225,7 @@
       clearInterval(dash.pollTimer);
       $("dash-loading").hidden = true;
       $("dash-load").disabled = false;
+      $("dash-reload").disabled = false;
       if (job.status === "done") {
         await loadStudies(dash.current && dash.current.id);
       } else {
@@ -502,7 +524,7 @@
       const saved = await post("/api/dashboard/studies", body);
       $("dash-editor").hidden = true;
       await loadStudies(saved.id);
-      if (!saved.loaded) $("dash-load").click();
+      if (!saved.loaded) startLoad("full");
     } catch (error) {
       setError("dash-editor-error", error.message);
     } finally {

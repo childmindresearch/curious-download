@@ -549,12 +549,16 @@ function appendResult(card, job) {
     );
     card.append(el("div", { class: "job-folder" }, result.folder));
   } else if (job.kind === "dashboard") {
+    const fresh =
+      result.mode === "refresh"
+        ? ` · refreshed: ${(result.newCompletions || 0).toLocaleString()} new completion(s), ${result.newParticipants || 0} new participant(s)`
+        : "";
     card.append(
       el(
         "div",
         { class: "job-summary" },
         `${result.participants.toLocaleString()} participant(s), ${result.completions.toLocaleString()} completion(s), ` +
-          `${result.activities} activit${result.activities === 1 ? "y" : "ies"} across ${result.applets} applet(s) — shown in the Dashboard tab`,
+          `${result.activities} activit${result.activities === 1 ? "y" : "ies"} across ${result.applets} applet(s)${fresh} — shown in the Dashboard tab`,
       ),
     );
   } else if (job.kind === "counts") {
