@@ -200,6 +200,7 @@ async function enterMain(email, server) {
   if (state.workspaces.length === 1) {
     await Promise.all([loadAnswersApplets(), loadDictionaryApplets()]);
   }
+  if (window.dashboard) window.dashboard.onLogin(state.workspaces);
   refreshJobs();
 }
 
@@ -208,9 +209,10 @@ $("tabs").onclick = (event) => {
   const button = event.target.closest(".tab");
   if (!button) return;
   for (const tab of document.querySelectorAll(".tab")) tab.classList.toggle("active", tab === button);
-  for (const name of ["answers", "dictionary", "counts"]) {
+  for (const name of ["answers", "dictionary", "counts", "dashboard"]) {
     $(`tab-${name}`).hidden = name !== button.dataset.tab;
   }
+  if (button.dataset.tab === "dashboard" && window.dashboard) window.dashboard.show();
 };
 
 // -- answers form ----------------------------------------------------------------------------
@@ -440,7 +442,12 @@ async function refreshJobs() {
   }
 }
 
-const KIND_LABELS = { answers: "Answers", dictionary: "Data dictionary", counts: "Participant counts" };
+const KIND_LABELS = {
+  answers: "Answers",
+  dictionary: "Data dictionary",
+  counts: "Participant counts",
+  dashboard: "Dashboard data",
+};
 
 function renderJobs(jobs) {
   const list = $("job-list");
@@ -491,7 +498,7 @@ function renderJob(job) {
     appendResult(card, job);
     for (const warning of job.warnings) card.append(el("div", { class: "job-warning" }, warning));
     const buttons = el("div", { class: "job-buttons" });
-    const revealPath = job.result.mainFile || job.result.folder;
+    const revealPath = job.kind === "dashboard" ? null : job.result.mainFile || job.result.folder;
     if (revealPath) {
       buttons.append(el("button", { class: "ghost", onclick: () => reveal(revealPath) }, "Show in Finder"));
     }
@@ -524,6 +531,15 @@ function appendResult(card, job) {
       el("div", { class: "job-summary" }, `${result.files} data dictionar${result.files === 1 ? "y" : "ies"} from ${ok} applet(s)`),
     );
     card.append(el("div", { class: "job-folder" }, result.folder));
+  } else if (job.kind === "dashboard") {
+    card.append(
+      el(
+        "div",
+        { class: "job-summary" },
+        `${result.participants.toLocaleString()} participant(s), ${result.completions.toLocaleString()} completion(s), ` +
+          `${result.activities} activit${result.activities === 1 ? "y" : "ies"} across ${result.applets} applet(s) — shown in the Dashboard tab`,
+      ),
+    );
   } else if (job.kind === "counts") {
     const range =
       result.fromUtc || result.toUtc

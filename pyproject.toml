@@ -31,3 +31,9 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+# The dashboard reasons in participants' local time with naive datetimes on purpose.
+"tests/test_schedule.py" = ["DTZ"]
+"tests/test_dashboard.py" = ["DTZ"]
+"tests/fake_dashboard.py" = ["DTZ"]

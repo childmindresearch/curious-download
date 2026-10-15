@@ -8,6 +8,7 @@ Passwords and decryptors live only in memory, never on disk.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import socket
@@ -15,7 +16,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -23,7 +24,7 @@ import httpx
 import typer
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -31,6 +32,9 @@ from .. import __version__
 from ..cli import UsageError, _load_settings, _parse_day, _save_settings
 from ..client import EXPORT_ROLES, ApiError, CuriousClient, MfaRequiredError, Participant
 from ..crypto import AppletDecryptor, AppletPasswordError
+from ..dashboard import config as studies
+from ..dashboard.loader import host_tz_offset_minutes, load_study, today_local
+from ..dashboard.views import GridResult, build, grid_csv, long_csv, view_params
 from ..export import DEFAULT_PAGE_SIZE, ExportFilters
 from . import runners
 from .jobs import JobManager
@@ -55,6 +59,10 @@ class AppState:
         self.client_factory = client_factory
         self.session: Session | None = None
         self.jobs = JobManager()
+        # Dashboard data lives only in memory, per login: study id -> StudyData.
+        self.dashboards: dict = {}
+        self.dashboard_views: dict = {}  # (study id, request signature) -> GridResult
+        self.dashboard_jobs: dict[str, str] = {}  # study id -> job id of its latest load
 
 
 # -- request bodies ----------------------------------------------------------
@@ -230,6 +238,8 @@ def create_app(
         if state.session and not state.jobs.any_running():
             state.session.client.close()
         state.session = Session(client, server, email)
+        state.dashboards.clear()
+        state.dashboard_views.clear()
         _save_settings(server=server, email=email)
         return {"ok": True, "email": email, "server": server}
 
@@ -240,6 +250,8 @@ def create_app(
         if state.session:
             state.session.client.close()
         state.session = None
+        state.dashboards.clear()
+        state.dashboard_views.clear()
         return {"ok": True}
 
     # -- browsing the account ----------------------------------------------------
@@ -436,6 +448,176 @@ def create_app(
             raise HTTPException(404, "No such job.")
         job.cancel()
         return {"ok": True}
+
+    # -- dashboard --------------------------------------------------------------------
+
+    def study_or_404(study_id: str) -> studies.StudyConfig:
+        try:
+            config = studies.get_study(study_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if config is None:
+            raise HTTPException(404, "No such study.")
+        return config
+
+    def study_payload(config: studies.StudyConfig) -> dict:
+        current = session()
+        data = state.dashboards.get(config.id)
+        job_id = state.dashboard_jobs.get(config.id)
+        job = state.jobs.get(job_id) if job_id else None
+        payload = {
+            **config.to_dict(),
+            "sameServer": config.server.rstrip("/") == current.server.rstrip("/"),
+            "loaded": data is not None,
+            "loadingJobId": job.id if job and job.to_dict()["status"] == "running" else None,
+            "lastJobId": job.id if job else None,
+        }
+        if data is not None:
+            first, last = data.day_span()
+            payload["data"] = {
+                "loadedAt": data.loaded_at.replace(tzinfo=UTC).astimezone().isoformat(timespec="seconds"),
+                "participants": len(data.participants),
+                "completions": len(data.completions),
+                "applets": [
+                    {
+                        **applet,
+                        "scheduleAvailable": data.schedule_available.get(applet_id, False),
+                        "historyAvailable": data.history_available.get(applet_id, False),
+                    }
+                    for applet_id, applet in data.applets.items()
+                ],
+                "entities": [
+                    {"key": e.key, "label": e.label, "applet": e.applet_name, "kind": e.kind, "deleted": e.deleted}
+                    for e in data.visible_entities()
+                ],
+                "warnings": data.warnings,
+                "span": [first.isoformat() if first else None, last.isoformat() if last else None],
+            }
+        return payload
+
+    @app.get("/api/dashboard/studies")
+    def dashboard_studies():
+        session()
+        return [study_payload(config) for config in studies.list_studies()]
+
+    @app.post("/api/dashboard/studies")
+    def dashboard_save(body: dict):
+        current = session()
+        try:
+            config = studies.StudyConfig.from_dict(body)
+            config.server = current.server
+            previous = studies.get_study(config.id)
+            config = studies.save_study(config)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e)) from e
+        # The loaded data depends on the applets, the identity aliases, and the data range; anything
+        # else (the dashboard type, its rules) is applied when a view is computed.
+        if previous is None or (previous.applets, previous.aliases, previous.data_from) != (
+            config.applets,
+            config.aliases,
+            config.data_from,
+        ):
+            state.dashboards.pop(config.id, None)
+        for key in [key for key in state.dashboard_views if key[0] == config.id]:
+            state.dashboard_views.pop(key, None)
+        return study_payload(config)
+
+    @app.delete("/api/dashboard/studies/{study_id}")
+    def dashboard_delete(study_id: str):
+        session()
+        try:
+            found = studies.delete_study(study_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if not found:
+            raise HTTPException(404, "No such study.")
+        state.dashboards.pop(study_id, None)
+        for key in [key for key in state.dashboard_views if key[0] == study_id]:
+            state.dashboard_views.pop(key, None)
+        return {"ok": True}
+
+    @app.get("/api/dashboard/studies/{study_id}")
+    def dashboard_study(study_id: str):
+        return study_payload(study_or_404(study_id))
+
+    @app.post("/api/dashboard/studies/{study_id}/load")
+    def dashboard_load(study_id: str):
+        current = session()
+        config = study_or_404(study_id)
+        running = state.dashboard_jobs.get(study_id)
+        if running and (job := state.jobs.get(running)) and job.to_dict()["status"] == "running":
+            return {"jobId": job.id}
+        client = current.client
+
+        def run(job):
+            data = load_study(client, config, progress=job.progress)
+            state.dashboards[config.id] = data
+            for key in [key for key in state.dashboard_views if key[0] == config.id]:
+                state.dashboard_views.pop(key, None)
+            for warning in data.warnings:
+                job.warn(warning)
+            return {
+                "studyId": config.id,
+                "participants": len(data.participants),
+                "completions": len(data.completions),
+                "applets": len(data.applets),
+                "activities": len(data.visible_entities()),
+            }
+
+        job = state.jobs.start("dashboard", f"Dashboard data — {config.name}", run)
+        state.dashboard_jobs[study_id] = job.id
+        return {"jobId": job.id}
+
+    def dashboard_result(study_id: str, query: dict) -> tuple[studies.StudyConfig, GridResult]:
+        config = study_or_404(study_id)
+        data = state.dashboards.get(study_id)
+        if data is None:
+            raise HTTPException(409, "Load the study's data first.")
+        host_tz = host_tz_offset_minutes()
+        today = today_local(host_tz)
+        signature = json.dumps(
+            {**query, "_loaded": data.loaded_at.isoformat(), "_today": today.isoformat()}, sort_keys=True
+        )
+        cached = state.dashboard_views.get((study_id, signature))
+        if cached is not None:
+            return config, cached
+        try:
+            params = view_params(
+                config, query, data, today=today, now_utc=datetime.now(UTC).replace(tzinfo=None), host_tz=host_tz
+            )
+            result = build(data, config, params)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        mine = [key for key in state.dashboard_views if key[0] == study_id]
+        for key in mine[:-5]:  # keep a few recent views for cell look-ups
+            state.dashboard_views.pop(key, None)
+        state.dashboard_views[(study_id, signature)] = result
+        return config, result
+
+    @app.get("/api/dashboard/studies/{study_id}/view")
+    def dashboard_view(study_id: str, request: Request):
+        _, result = dashboard_result(study_id, dict(request.query_params))
+        return result.grid
+
+    @app.get("/api/dashboard/studies/{study_id}/cell")
+    def dashboard_cell(study_id: str, row: str, col: str, request: Request):
+        query = {key: value for key, value in request.query_params.items() if key not in ("row", "col")}
+        _, result = dashboard_result(study_id, query)
+        return {"items": result.details.get((row, col), [])}
+
+    @app.get("/api/dashboard/studies/{study_id}/export")
+    def dashboard_export(study_id: str, request: Request):
+        query = dict(request.query_params)
+        layout = query.pop("format", "grid")
+        config, result = dashboard_result(study_id, query)
+        text = long_csv(result) if layout == "long" else grid_csv(result.grid)
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        name = f"dashboard_{studies.slug(config.name)}_{result.grid['view']}_{layout}_{stamp}.csv"
+        return Response(
+            content="\ufeff" + text,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
 
     # -- local conveniences ---------------------------------------------------------
 

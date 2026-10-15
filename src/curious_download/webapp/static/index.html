@@ -55,6 +55,7 @@
         <button class="tab active" data-tab="answers" type="button">Download answers</button>
         <button class="tab" data-tab="dictionary" type="button">Data dictionary</button>
         <button class="tab" data-tab="counts" type="button">Participant counts</button>
+        <button class="tab" data-tab="dashboard" type="button">Dashboard</button>
       </nav>
 
       <!-- ============ answers ============ -->
@@ -236,6 +237,201 @@
         <button id="counts-run" class="primary run" type="button">Count participants</button>
       </section>
 
+      <!-- ============ dashboard ============ -->
+      <section id="tab-dashboard" class="card task" hidden>
+        <p class="task-help">Who has done what, against the schedule: one row per participant, coloured
+          by completed, missed, and upcoming. Reads schedules and submission times only — no answers are
+          decrypted and no applet password is needed. A study can span several applets.</p>
+
+        <div class="dash-toolbar">
+          <label>Study
+            <select id="dash-study"></select>
+          </label>
+          <div class="dash-toolbar-buttons">
+            <button id="dash-new" class="ghost" type="button">New study…</button>
+            <button id="dash-edit" class="ghost" type="button">Edit</button>
+            <button id="dash-delete" class="ghost" type="button">Delete</button>
+            <button id="dash-load" class="primary" type="button">Load data</button>
+          </div>
+        </div>
+        <div id="dash-loading" class="dash-loading" hidden>
+          <div class="job-stage" id="dash-loading-stage"></div>
+          <div class="job-detail" id="dash-loading-detail"></div>
+          <div class="progress indeterminate" id="dash-loading-progress"><div class="bar"></div></div>
+        </div>
+        <div id="dash-error" class="error" hidden></div>
+
+        <!-- study editor -->
+        <div id="dash-editor" class="dash-editor" hidden>
+          <h2 id="dash-editor-title">New study</h2>
+          <div class="field-grid">
+            <label>Study name
+              <input id="dash-name" type="text" placeholder="e.g. EMA pilot, fall 2026">
+            </label>
+            <label>Workspace
+              <select id="dash-workspace"></select>
+            </label>
+          </div>
+          <label>Applets in this study
+            <small>Tick every applet the study uses. Participants are matched across applets by their secret ID.</small>
+          </label>
+          <div class="checklist" id="dash-applets-list">
+            <input type="search" placeholder="Search applets…">
+            <div class="options"></div>
+          </div>
+
+          <label>Dashboard type</label>
+          <div class="type-cards" id="dash-type">
+            <label class="type-card">
+              <input type="radio" name="dash-type" value="fixed" checked>
+              <span class="type-title">Fixed schedule</span>
+              <span class="type-text">Everyone follows the same calendar: the same start and end dates, activities
+                repeating daily or weekly. Columns are days or weeks; cells show done / expected.</span>
+            </label>
+            <label class="type-card">
+              <input type="radio" name="dash-type" value="rolling">
+              <span class="type-title">Same schedule, own start date</span>
+              <span class="type-text">The same protocol, but each participant starts on their own day. Columns are
+                study days (day 1, day 2, …) so everyone lines up.</span>
+            </label>
+            <label class="type-card">
+              <input type="radio" name="dash-type" value="cross">
+              <span class="type-title">Cross-sectional</span>
+              <span class="type-text">Each activity is done once. One column per activity or flow; a cell is done,
+                partly done, or not done — the REDCap-style view.</span>
+            </label>
+            <label class="type-card">
+              <input type="radio" name="dash-type" value="individual">
+              <span class="type-title">Individual schedules</span>
+              <span class="type-text">Every participant has their own calendar. One column per day across all their
+                activities, with a per-participant timeline on click.</span>
+            </label>
+          </div>
+
+          <div id="dash-opts-rolling" class="dash-opts" hidden>
+            <div class="field-grid">
+              <label>Day 1 of each participant is
+                <select id="dash-start-rule">
+                  <option value="first_completion">their first completion</option>
+                  <option value="individual_schedule">the start of their individual schedule</option>
+                  <option value="joined">the day they were added to the applet</option>
+                  <option value="manual">a date I enter below</option>
+                </select>
+              </label>
+              <label>Study length (days)
+                <input id="dash-study-days" type="number" min="1" max="730" value="28">
+              </label>
+            </div>
+            <label id="dash-start-entity-row">Only count the first completion of
+              <select id="dash-start-entity"><option value="">any activity</option></select>
+            </label>
+            <label id="dash-manual-row" hidden>Start dates, one per line: <code>secret ID, YYYY-MM-DD</code>
+              <textarea id="dash-manual-starts" rows="4" spellcheck="false" placeholder="P001, 2026-09-01"></textarea>
+            </label>
+          </div>
+
+          <details class="advanced">
+            <summary>Rules and matching</summary>
+            <label class="checkbox-row">
+              <input type="checkbox" id="dash-late-counts" checked>
+              Count a completion outside its time window (same scheduled day) as done
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="dash-count-from-joined" checked>
+              Don't expect anything from before the day a participant was added to the applet
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="dash-include-removed">
+              Show participants who were removed from the applet (their data is still on the server)
+            </label>
+            <label class="inline-number">Only fetch completions received from
+              <input type="date" id="dash-data-from">
+              <small>Blank: everything. Faster for long-running applets when you only follow the current wave.</small>
+            </label>
+            <label>Secret IDs that are the same person, one per line: <code>ID in the data, ID to count as</code>
+              <textarea id="dash-aliases" rows="3" spellcheck="false" placeholder="P001-phone2, P001"></textarea>
+              <small>For participants who appear under different secret IDs in different applets (or after a device change).</small>
+            </label>
+          </details>
+
+          <div id="dash-editor-error" class="error" hidden></div>
+          <div class="modal-buttons">
+            <button class="ghost" id="dash-cancel" type="button">Cancel</button>
+            <button class="primary" id="dash-save" type="button">Save study</button>
+          </div>
+        </div>
+
+        <!-- the dashboard itself -->
+        <div id="dash-board" hidden>
+          <div class="dash-controls">
+            <label>View
+              <select id="dash-view">
+                <option value="fixed">Fixed schedule</option>
+                <option value="rolling">Own start date</option>
+                <option value="cross">Cross-sectional</option>
+                <option value="individual">Individual schedules</option>
+              </select>
+            </label>
+            <label class="dash-range">From <input type="date" id="dash-first"></label>
+            <label class="dash-range">To <input type="date" id="dash-last"></label>
+            <label class="dash-gran">Columns
+              <select id="dash-granularity">
+                <option value="day">Days</option>
+                <option value="week">Weeks</option>
+              </select>
+            </label>
+            <label class="dash-days">Study days <input type="number" id="dash-view-days" min="1" max="730"></label>
+            <label>Activities
+              <select id="dash-entities-mode">
+                <option value="all">All</option>
+                <option value="some">Choose…</option>
+              </select>
+            </label>
+            <label>Sort
+              <select id="dash-sort">
+                <option value="label">Participant</option>
+                <option value="pct-asc">Adherence, lowest first</option>
+                <option value="pct-desc">Adherence, highest first</option>
+                <option value="last">Last completion, oldest first</option>
+              </select>
+            </label>
+            <label>Find <input type="search" id="dash-search" placeholder="Secret ID, nickname, tag…"></label>
+            <label class="checkbox-row dash-late-toggle">
+              <input type="checkbox" id="dash-view-late">
+              late counts as done
+            </label>
+          </div>
+          <div class="checklist" id="dash-entities-list" hidden>
+            <input type="search" placeholder="Search activities…">
+            <div class="options"></div>
+            <button class="ghost" id="dash-entities-apply" type="button">Apply</button>
+          </div>
+          <div id="dash-focus" class="dash-focus" hidden>
+            <span id="dash-focus-label"></span>
+            <button class="ghost" id="dash-focus-clear" type="button">Back to all participants</button>
+          </div>
+
+          <div class="stat-row" id="dash-stats"></div>
+          <div class="dash-legend" id="dash-legend"></div>
+          <div class="dash-grid-wrap" id="dash-grid-wrap">
+            <table class="dash-grid" id="dash-grid"></table>
+          </div>
+          <div class="dash-footer">
+            <span id="dash-count" class="fineprint"></span>
+            <span class="dash-footer-buttons">
+              <button class="ghost" id="dash-export-grid" type="button">Download grid CSV</button>
+              <button class="ghost" id="dash-export-long" type="button">Download every occurrence CSV</button>
+            </span>
+          </div>
+          <div id="dash-notes" class="dash-notes"></div>
+          <p class="fineprint">How to read it: the schedule (default events, individual events, and their history) is
+            expanded into the days and time windows each participant's phone offered an activity. Each completion is
+            matched to the occurrence the phone recorded it for; older completions are matched by activity and time
+            window. Curious keeps unfinished activities on the phone only, so "partly done" exists for flows alone.
+            Click a cell for the details.</p>
+        </div>
+      </section>
+
       <!-- ============ runs ============ -->
       <section id="jobs-panel">
         <h2>Runs</h2>
@@ -257,6 +453,18 @@
     </div>
   </div>
 
+  <!-- cell details -->
+  <div id="dash-cell-modal" class="modal-backdrop" hidden>
+    <div class="modal wide">
+      <h2 id="dash-cell-title">Details</h2>
+      <div class="dash-cell-body" id="dash-cell-body"></div>
+      <div class="modal-buttons">
+        <button class="ghost" id="dash-cell-close" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
+  <script src="/static/dashboard.js"></script>
 </body>
 </html>

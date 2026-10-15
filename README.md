@@ -161,6 +161,8 @@ then pick a task:
 - **Data dictionary** — choose a workspace, all or some of its applets, and all saved versions or only the current one.
 - **Participant counts** — choose a workspace and a date range; the table is shown in the page
   and saved as a CSV.
+- **Dashboard** — who has done what, against the schedule, for a study spanning one or more
+  applets. See [Dashboard](#dashboard).
 
 Runs appear at the bottom with a progress bar and can be cancelled. Each finished run shows
 what was written, a **Show in Finder** button, and the equivalent terminal command, so a
@@ -177,6 +179,81 @@ Notes:
 - Keep the terminal window open while you use the app; Ctrl+C stops it.
 - `--port` chooses the port (default 8456; the next free one is used if taken) and
   `--no-browser` skips opening the browser.
+
+## Dashboard
+
+The **Dashboard** tab of `curious-app` shows each participant's progress against the study
+schedule: one row per participant, cells coloured by completed, missed, open, and upcoming. It
+reads only schedules and submission times (`GET /applets/{id}/events`, the schedule history, the
+participant list, and the metadata of `GET /answers/applet/{id}/data`). No answer is decrypted and
+no applet password is needed, but reading schedules needs an owner, manager, or coordinator role on
+the applet.
+
+A **study** is a saved set-up: a name, the applets it uses (several at once is fine), the kind of
+dashboard, and a few rules. Studies are stored in `~/.config/curious-download/dashboards/`, never
+with any password, and are tied to the server you saved them on. Click **Load data** to read
+everything from Curious; the data stays in memory until you log out, and every view is computed
+from it on the spot.
+
+### The four kinds of dashboard
+
+| Kind | For studies where… | Columns |
+|---|---|---|
+| **Fixed schedule** | everyone follows the same calendar: same start and end dates, activities repeating daily or weekly | days (or weeks) × activities; a cell shows done / expected |
+| **Same schedule, own start date** | the protocol is the same but each participant starts on their own day | study day 1, 2, … × activities, so everyone lines up |
+| **Cross-sectional** | each activity is done once | one per activity or flow; a cell is done, partly done, or not done |
+| **Individual schedules** | every participant has their own calendar | days, with all of a participant's activities folded into the cell; click a participant for their own timeline |
+
+For *own start date*, day 1 can be the participant's first completion (of any activity or of one
+you choose), the start of their individual schedule, the day they were added to the applet, or a
+date you type in. When the chosen source is missing for someone, the dashboard falls back to the
+next one and says so in the row.
+
+### How a cell is worked out
+
+1. **Expected occurrences.** Each schedule event is expanded into the days it offered its
+   activity, with the same rules as the mobile app: `ALWAYS` (no expectation; completions are
+   counted), `ONCE`, `DAILY`, `WEEKLY` (the weekday of the selected date), `WEEKDAYS`, `MONTHLY`
+   (clamped to short months). Each occurrence has the event's time window in the participant's
+   local time; a window ending before it starts runs into the next day, and "access before
+   schedule" opens it at midnight. An individual event replaces the default events for that one
+   activity or flow only, as in the backend. Where the schedule history is readable (owner or
+   manager), each version of an event only counts for the days it was in force, so a change made
+   mid-study is not applied to the past; otherwise the current schedule is assumed throughout and
+   the dashboard says so. Nothing is expected from before the day a participant was added to the
+   applet (switch off in *Rules and matching*).
+2. **Matching.** The phone records which event it was answering and the time it was scheduled
+   for, which pins the exact occurrence even when the answer arrived late or after midnight.
+   Older answers without that are matched to an occurrence of the same activity whose window
+   contains the completion, or else the nearest one that day. A second completion in the same
+   window, or one with no occurrence at all (always-available activities), is counted as
+   *done, not scheduled*. Times use the offset the phone reported with each answer.
+3. **Status.** *Completed*; *completed outside the time window* (counted as done unless you switch
+   that off, and marked `*`); *partly done* for a flow with activities missing; *missed* once the
+   window has closed; *open now*; *upcoming*. Adherence is done ÷ occurrences whose window has
+   closed. Curious keeps unfinished activities on the phone only, so a half-finished questionnaire
+   is invisible to the server; "partly done" therefore exists for flows alone.
+
+Participants are matched across applets by secret ID; the *aliases* rule maps IDs that belong to
+the same person. Reviewer assessments, hidden and reviewer-only activities, and activities that
+only exist inside a flow are left out. Participants removed from an applet are hidden unless you
+ask for them; their data is still on the server.
+
+### Exports
+
+**Download grid CSV** writes the table as shown, one row per participant with the status in each
+cell. **Download every occurrence CSV** writes one row per expected occurrence and per completion
+(participant, applet, activity, day, window, status, completion times, whether it was in the
+window, submission ID), the same content as the click-through details.
+
+### Trying it without a server
+
+```bash
+.venv/bin/python -m tests.demo_server
+```
+
+runs the app against a fake Curious with a scheduled study (log in with `researcher@example.org` /
+`account-pw`, any server address); nothing leaves your computer.
 
 ## Data dictionaries
 

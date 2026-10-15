@@ -222,8 +222,27 @@ class CuriousClient:
         """
         return self._get(f"/applets/{applet_id}/versions/{version}")["result"]
 
+    def applet_respondents(self, owner_id: str, applet_id: str) -> list[dict]:
+        """The admin panel's Participants rows: [{id (account), status, lastSeen, details: [...]}].
+
+        Each detail is one subject in one applet: subjectId, respondentSecretId, respondentNickname,
+        subjectTag, subjectCreatedAt, hasIndividualSchedule, subjectIsDeleted, invitation, roles.
+        Owner, manager, coordinator, or reviewer.
+        """
+        return self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", {"limit": 10000})["result"]
+
+    def applet_events(self, applet_id: str, respondent_id: str | None = None) -> list[dict]:
+        """Schedule events: the default schedule, or with `respondent_id` (an account id) that
+        person's individual events only. Owner, manager, or coordinator."""
+        params = {"respondentId": respondent_id} if respondent_id else None
+        return self._get(f"/applets/{applet_id}/events", params)["result"]
+
+    def applet_events_history_page(self, applet_id: str, *, page: int, limit: int) -> dict:
+        """One page of every saved version of every event: {"result": [...], "count": n}. Owner or manager."""
+        return self._get(f"/applets/{applet_id}/events/history", {"page": page, "limit": limit})
+
     def participants(self, owner_id: str, applet_id: str) -> list[Participant]:
-        rows = self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", {"limit": 10000})["result"]
+        rows = self.applet_respondents(owner_id, applet_id)
         found: dict[str, Participant] = {}
         for row in rows:
             for detail in row.get("details") or []:
