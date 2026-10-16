@@ -446,7 +446,10 @@ td.cell .late-mark { font-size: 9px; vertical-align: super; margin-left: 1px; }
 table.dash-grid tfoot th, table.dash-grid tfoot td {
   position: sticky; bottom: 0; z-index: 3; background: var(--card); border-top: 1px solid var(--line);
 }
-table.dash-grid tfoot td.cell { font-weight: 600; cursor: default; }
+table.dash-grid tfoot th, table.dash-grid tfoot td { height: 36px; }
+table.dash-grid tfoot td.cell { font-weight: 700; font-size: 13.5px; cursor: default; }
+table.dash-grid tfoot .row-head .rh-label { font-size: 14px; }
+table.dash-grid tfoot .row-head .rh-label .rh-pct { font-size: 13px; }
 table.dash-grid tfoot td.cell:hover { outline: none; }
 
 .dash-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
@@ -495,3 +498,5 @@ table.picker-table input { width: auto; margin: 0; }
 table.picker-table .empty { color: var(--muted); padding: 16px; text-align: center; }
 
 .dash-data-status { margin-top: 8px; }
+
+.legend-note { flex-basis: 100%; color: var(--muted); font-size: 12px; margin-top: 2px; }

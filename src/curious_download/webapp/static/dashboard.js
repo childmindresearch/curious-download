@@ -941,6 +941,16 @@
       legend.append(el("span", { class: "legend-item" }, el("span", { class: `swatch s-${item.status}` }, symbol), item.label));
     }
     legend.append(el("span", { class: "legend-item" }, el("span", { class: "swatch s-na" }), "Not in this applet"));
+    if (dash.grid.view !== "cross") {
+      legend.append(
+        el(
+          "span",
+          { class: "legend-note" },
+          "In a cell, 2/3 is done out of expected; +1 counts completions beyond the schedule (a repeat in the same window, " +
+            "or one matching no scheduled occurrence); * marks a completion outside its time window. The bottom row adds up every participant.",
+        ),
+      );
+    }
   }
 
   function renderNotes() {
