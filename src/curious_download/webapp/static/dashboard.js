@@ -793,7 +793,8 @@
       const kind = button.dataset.tick || button.dataset.untick;
       const tick = Boolean(button.dataset.tick);
       for (const box of boxes) {
-        if (kind === "all" || box.dataset.kind === kind) box.checked = tick;
+        const matches = kind === "all" || box.dataset.kind === kind || (kind === "deleted" && box.dataset.deleted === "1");
+        if (matches) box.checked = tick;
       }
     };
   }
@@ -815,6 +816,7 @@
     for (const entity of entities) {
       const checkbox = el("input", { type: "checkbox", value: entity.key });
       checkbox.dataset.kind = entity.kind;
+      checkbox.dataset.deleted = entity.deleted ? "1" : "";
       checkbox.checked = !dash.entityChoice || dash.entityChoice.includes(entity.key);
       options.append(el("label", {}, checkbox, " ", multi ? `${entity.applet}: ${entity.label}` : entity.label));
     }
