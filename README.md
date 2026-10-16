@@ -295,6 +295,16 @@ button:
 
 **Quick CSV of this grid** downloads `dashboard_grid.csv` alone through the browser.
 
+### Dates and columns
+
+The range shown at first is where the completions are: the days holding the middle 98% of them,
+extended a week ahead when the study is still going (a completion in the last two weeks). A study
+from last year therefore opens on last year. Change **From** and **To** to look elsewhere; when a
+range holds nothing, a note says where the data runs. **Columns** is *Auto* by default: days for
+ranges up to three months, weeks beyond. Activities hidden in the applet are shown, marked
+*(hidden)*, when they have data, since an activity hidden now may have been the heart of the
+study earlier; nothing is expected of them, and **Remove hidden** takes them out of the list.
+
 ### Trying it without a server
 
 ```bash

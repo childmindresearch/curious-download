@@ -37,7 +37,9 @@ class Entity:
     @property
     def label(self) -> str:
         name = f"Flow: {self.name}" if self.kind == "flow" else self.name
-        return f"{name} (deleted)" if self.deleted else name
+        if self.deleted:
+            return f"{name} (deleted)"
+        return f"{name} (hidden)" if self.hidden else name
 
 
 @dataclass
@@ -159,10 +161,13 @@ class StudyData:
     individual_events: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
 
     def visible_entities(self) -> list[Entity]:
-        """Activities and flows worth a column: not hidden, not reviewer-only, and not an activity that
-        only ever appears inside a flow (no schedule of its own and never completed on its own)."""
+        """Activities and flows worth a column: not reviewer-only, not an activity that only ever
+        appears inside a flow (no schedule of its own and never completed on its own), and hidden
+        ones only when they have data (an activity hidden in the applet now may have been the heart
+        of the study earlier)."""
         scheduled = {rule.entity for rules in self.rules.values() for rule in rules}
         standalone = {c.activity_key for c in self.completions if not c.flow_id}
+        with_data = standalone | {c.flow_key for c in self.completions if c.flow_key}
         in_flows = {
             f"{e.applet_id}:activity:{activity_id}"
             for e in self.entities.values()
@@ -173,8 +178,8 @@ class StudyData:
             (
                 e
                 for e in self.entities.values()
-                if not e.hidden
-                and not e.reviewable
+                if not e.reviewable
+                and (not e.hidden or e.key in with_data)
                 and (e.key not in in_flows or e.key in scheduled or e.key in standalone)
             ),
             key=lambda e: (self.applets.get(e.applet_id, {}).get("name", ""), e.kind == "flow", e.order, e.name),
@@ -341,7 +346,13 @@ def compute(data: StudyData, options: Options) -> Computed:
         now_local = options.now_utc + timedelta(minutes=offset)
         now_local_by_participant[participant.key] = now_local
 
-        rules = [rule for rule in participant_rules(data, participant) if rule.entity in entities]
+        # Hidden activities are not offered by the phone, so nothing is expected of them; their completions still count.
+        hidden = {e.key for e in data.entities.values() if e.hidden}
+        rules = [
+            rule
+            for rule in participant_rules(data, participant)
+            if rule.entity in entities and rule.entity not in hidden
+        ]
         for rule in rules:
             if rule.periodicity == ALWAYS and rule.one_time_completion:
                 once.add((participant.key, rule.entity))

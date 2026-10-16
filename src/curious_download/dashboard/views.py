@@ -69,6 +69,7 @@ class ViewParams:
     first: date
     last: date
     granularity: str = "day"
+    granularity_requested: str = "auto"  # what the study or the page asked for; "auto" picks days or weeks
     late_counts_as_done: bool = True
     count_from_joined: bool = True
     include_removed: bool = False
@@ -94,20 +95,53 @@ def _parse_day(text: str | None) -> date | None:
         raise ValueError(f"Not a valid date: {text!r} (use YYYY-MM-DD)") from e
 
 
+AUTO_WEEKS_ABOVE_DAYS = 90
+ONGOING_WITHIN_DAYS = 14
+
+
+def completion_span(data: StudyData) -> tuple[date | None, date | None]:
+    """First and last local day with a completion."""
+    days = [completion.end_local.date() for completion in data.completions]
+    return (min(days), max(days)) if days else (None, None)
+
+
+def default_range(data: StudyData, today: date) -> tuple[date, date]:
+    """Where the data is: the days holding the middle 98% of completions, extended to a week
+    ahead when the study is still going (a completion in the last two weeks). Without completions,
+    the schedule's dates, else the last month."""
+    days = sorted(completion.end_local.date() for completion in data.completions)
+    if days:
+        first = days[min(len(days) - 1, int(len(days) * 0.01))]
+        # Leave out the last 1% (at least one completion) so a lone straggler does not stretch the range.
+        last = days[max(0, min(len(days) - 1, int(len(days) * 0.99) - 1))]
+        if (today - days[-1]).days <= ONGOING_WITHIN_DAYS:
+            last = today + timedelta(days=7)
+        elif (days[-1] - last).days <= ONGOING_WITHIN_DAYS:
+            last = days[-1]
+    else:
+        span_first, span_last = data.day_span()
+        last = min(max(span_last or today, today), today + timedelta(days=7))
+        first = max(span_first or (today - timedelta(days=30)), last - timedelta(days=120))
+    if (last - first).days > MAX_DAYS:
+        first = last - timedelta(days=MAX_DAYS)
+    return first, last
+
+
 def view_params(
     config: StudyConfig, query: dict, data: StudyData, *, today: date, now_utc: datetime, host_tz: int
 ) -> ViewParams:
     """Combine the saved study with per-request overrides from the page."""
     view = query.get("view") or config.view
-    span_first, span_last = data.day_span()
-    last = _parse_day(query.get("last")) or min(max(span_last or today, today), today + timedelta(days=7))
-    first = _parse_day(query.get("first")) or max(
-        span_first or (today - timedelta(days=30)), last - timedelta(days=120)
-    )
+    default_first, default_last = default_range(data, today)
+    first = _parse_day(query.get("first")) or default_first
+    last = _parse_day(query.get("last")) or default_last
     if first > last:
         first, last = last, first
     if (last - first).days > MAX_DAYS:
         first = last - timedelta(days=MAX_DAYS)
+    granularity = query.get("granularity") or config.granularity or "auto"
+    if granularity == "auto":
+        granularity = "week" if (last - first).days > AUTO_WEEKS_ABOVE_DAYS else "day"
 
     def flag(name: str, default: bool) -> bool:
         value = query.get(name)
@@ -136,7 +170,8 @@ def view_params(
         view=view,
         first=first,
         last=last,
-        granularity=query.get("granularity") or config.granularity or "day",
+        granularity=granularity,
+        granularity_requested=query.get("granularity") or config.granularity or "auto",
         late_counts_as_done=flag("lateCountsAsDone", config.late_counts_as_done),
         count_from_joined=flag("countFromJoined", config.count_from_joined),
         include_removed=flag("includeRemoved", config.include_removed),
@@ -436,6 +471,7 @@ def _finish(
             "first": params.first.isoformat(),
             "last": params.last.isoformat(),
             "granularity": params.granularity,
+            "granularityRequested": params.granularity_requested,
             "lateCountsAsDone": late,
             "countFromJoined": params.count_from_joined,
             "includeRemoved": params.include_removed,
@@ -452,6 +488,19 @@ def _finish(
         },
     }
     return GridResult(grid, details)
+
+
+def _range_note(data: StudyData, params: ViewParams, computed) -> list[str]:
+    """Say where the data is when the shown range holds none of it."""
+    if computed.occurrences or any(params.first <= extra.day <= params.last for extra in computed.extras):
+        return []
+    first, last = completion_span(data)
+    where = f" This study's completions run from {first.isoformat()} to {last.isoformat()}." if first and last else ""
+    message = (
+        f"Nothing was scheduled or completed between {params.first.isoformat()} and {params.last.isoformat()}.{where} "
+        "Change From and To to look at another period."
+    )
+    return [message]
 
 
 def _common_notes(data: StudyData) -> list[str]:
@@ -551,7 +600,7 @@ def _fixed(data: StudyData, params: ViewParams) -> GridResult:
         groups,
         columns,
         bucket_of=lambda participant, day: _bucket(day, params.granularity).isoformat(),
-        notes=_common_notes(data),
+        notes=_common_notes(data) + _range_note(data, params, computed),
     )
 
 
@@ -874,7 +923,7 @@ def _individual(data: StudyData, params: ViewParams) -> GridResult:
     details: dict[tuple[str, str], list[dict]] = defaultdict(list)
     rows: list[dict] = []
     cells_by_row: list[list[Counts | None]] = []
-    notes = _common_notes(data)
+    notes = _common_notes(data) + _range_note(data, params, computed)
     multi = len(data.applets) > 1
 
     if params.focus:

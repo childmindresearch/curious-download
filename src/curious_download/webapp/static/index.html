@@ -417,6 +417,7 @@
             <label class="dash-range">To <input type="date" id="dash-last"></label>
             <label class="dash-gran">Columns
               <select id="dash-granularity">
+                <option value="auto">Auto (days, or weeks for long ranges)</option>
                 <option value="day">Days</option>
                 <option value="week">Weeks</option>
               </select>
@@ -462,6 +463,7 @@
               <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="flow">Remove flows</button>
               <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="activity">Remove activities</button>
               <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="deleted" title="Activities no longer in the applet, known only from old answers or the schedule history">Remove deleted</button>
+              <button class="ghost" type="button" data-entities="dash-entities-list" data-untick="hidden" title="Activities hidden in the applet now; shown because they have data">Remove hidden</button>
               <button class="primary" id="dash-entities-apply" type="button">Apply</button>
             </div>
           </div>

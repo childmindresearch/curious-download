@@ -698,6 +698,33 @@ def test_participant_rows_carry_details_for_the_picker(make_client):
     assert (scanned["P001"]["nickname"], scanned["P001"]["tag"]) == ("Pat", "Child")
 
 
+def test_default_range_follows_the_data_and_picks_the_columns(make_client):
+    client = make_client()
+    study = loaded_study(client)
+    grid = view(client, study["id"], view="fixed")
+    # The fake's completions run from day -11 to day -2 and the study is still going: a week ahead is shown.
+    assert grid["params"]["first"] == day(-11).isoformat() and grid["params"]["last"] == day(7).isoformat()
+    assert grid["params"]["granularity"] == "day" and grid["params"]["granularityRequested"] == "auto"
+    assert not any("Nothing was scheduled" in note for note in grid["notes"])
+
+    long_ago = view(
+        client, study["id"], view="fixed", first=day(-400).isoformat(), last=day(-300).isoformat(), hideEmpty="true"
+    )
+    assert long_ago["params"]["granularity"] == "week", "more than 90 days: weeks"
+    assert any(
+        "Nothing was scheduled or completed" in note and day(-11).isoformat() in note for note in long_ago["notes"]
+    )
+    assert long_ago["columns"] == [] and long_ago["hidden"]["columns"] > 0, "every column was empty"
+    forced = view(
+        client, study["id"], view="fixed", first=day(-400).isoformat(), last=day(-300).isoformat(), granularity="day"
+    )
+    assert forced["params"]["granularity"] == "day" and forced["params"]["granularityRequested"] == "day"
+
+    status = client.get(f"/api/dashboard/studies/{study['id']}").json()
+    assert status["data"]["completionSpan"] == [day(-11).isoformat(), day(-2).isoformat()]
+    assert status["granularity"] == "auto"
+
+
 # -- cross-sectional view ------------------------------------------------------------------------------
 
 

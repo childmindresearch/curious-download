@@ -16,7 +16,7 @@ from .. import cli
 
 VIEWS = ("fixed", "rolling", "cross", "individual")
 START_RULES = ("first_completion", "individual_schedule", "joined", "manual")
-GRANULARITIES = ("day", "week")
+GRANULARITIES = ("auto", "day", "week")
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -42,7 +42,7 @@ class StudyConfig:
     count_from_joined: bool = True  # ignore occurrences before the participant was added to the applet
     include_removed: bool = False  # show participants removed from every applet (their data is still there)
     data_from: str | None = None  # YYYY-MM-DD: only fetch completions received from this day on
-    granularity: str = "day"
+    granularity: str = "auto"  # auto: days for short ranges, weeks for long ones
     created: str = ""
     updated: str = ""
 

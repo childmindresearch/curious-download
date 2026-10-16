@@ -35,7 +35,7 @@ from ..crypto import AppletDecryptor, AppletPasswordError
 from ..dashboard import cache as study_cache
 from ..dashboard import config as studies
 from ..dashboard.loader import host_tz_offset_minutes, load_study, scan_participants, today_local
-from ..dashboard.views import GridResult, build, grid_csv, long_csv, view_params
+from ..dashboard.views import GridResult, build, completion_span, grid_csv, long_csv, view_params
 from ..export import DEFAULT_PAGE_SIZE, ExportFilters
 from . import runners
 from .jobs import JobManager
@@ -551,9 +551,17 @@ def create_app(
                     for applet_id, applet in data.applets.items()
                 ],
                 "entities": [
-                    {"key": e.key, "label": e.label, "applet": e.applet_name, "kind": e.kind, "deleted": e.deleted}
+                    {
+                        "key": e.key,
+                        "label": e.label,
+                        "applet": e.applet_name,
+                        "kind": e.kind,
+                        "deleted": e.deleted,
+                        "hidden": e.hidden,
+                    }
                     for e in data.visible_entities()
                 ],
+                "completionSpan": [day.isoformat() if day else None for day in completion_span(data)],
                 "participantList": participant_choices(data),
                 "warnings": data.warnings,
                 "span": [first.isoformat() if first else None, last.isoformat() if last else None],

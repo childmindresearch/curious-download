@@ -178,9 +178,10 @@
       return;
     }
     const loaded = new Date(data.loadedAt);
+    const span = data.completionSpan && data.completionSpan[0] ? ` from ${when(data.completionSpan[0])} to ${when(data.completionSpan[1])}` : "";
     status.textContent =
       `Data as of ${loaded.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` +
-      ` · ${n(data.participants)} participant(s), ${n(data.completions)} completion(s)` +
+      ` · ${n(data.participants)} participant(s), ${n(data.completions)} completion(s)${span}` +
       (data.fromCache ? " · restored from the last run; Refresh fetches what changed since" : "");
     status.hidden = false;
   }
@@ -550,7 +551,7 @@
   function applyConfigToControls() {
     const config = dash.current;
     $("dash-view").value = config.view;
-    $("dash-granularity").value = config.granularity || "day";
+    $("dash-granularity").value = config.granularity || "auto";
     $("dash-view-days").value = config.study_days;
     $("dash-view-late").checked = config.late_counts_as_done;
     $("dash-first").value = "";
@@ -793,7 +794,11 @@
       const kind = button.dataset.tick || button.dataset.untick;
       const tick = Boolean(button.dataset.tick);
       for (const box of boxes) {
-        const matches = kind === "all" || box.dataset.kind === kind || (kind === "deleted" && box.dataset.deleted === "1");
+        const matches =
+          kind === "all" ||
+          box.dataset.kind === kind ||
+          (kind === "deleted" && box.dataset.deleted === "1") ||
+          (kind === "hidden" && box.dataset.hidden === "1");
         if (matches) box.checked = tick;
       }
     };
@@ -817,6 +822,7 @@
       const checkbox = el("input", { type: "checkbox", value: entity.key });
       checkbox.dataset.kind = entity.kind;
       checkbox.dataset.deleted = entity.deleted ? "1" : "";
+      checkbox.dataset.hidden = entity.hidden ? "1" : "";
       checkbox.checked = !dash.entityChoice || dash.entityChoice.includes(entity.key);
       options.append(el("label", {}, checkbox, " ", multi ? `${entity.applet}: ${entity.label}` : entity.label));
     }
@@ -1011,8 +1017,10 @@
       .sort(compareRows);
     dash.windowStart = -1;
     const hidden = (dash.grid.hidden && dash.grid.hidden.columns) || 0;
+    const params = dash.grid.params || {};
+    const columns = params.granularityRequested === "auto" && dash.grid.view !== "cross" ? ` · ${params.granularity === "week" ? "weeks" : "days"} (auto)` : "";
     $("dash-count").textContent =
-      `${dash.rows.length} of ${dash.grid.rows.length} row(s) · ${dash.grid.columns.length} column(s)` +
+      `${dash.rows.length} of ${dash.grid.rows.length} row(s) · ${dash.grid.columns.length} column(s)${columns}` +
       (hidden ? ` (${hidden} empty column(s) hidden)` : "");
     renderBody(true);
   }

@@ -377,3 +377,47 @@ def test_cache_roundtrip_keeps_every_field(tmp_path, monkeypatch):
     assert cache.load_cache("s", server="https://y", email="researcher@example.org") is None
     cache.delete_cache("s")
     assert cache.load_cache("s", server="https://x", email="researcher@example.org") is None
+
+
+def test_default_range_for_a_study_from_last_year():
+    from curious_download.dashboard.views import default_range
+
+    data = study()
+    # A summer programme a year ago, plus one straggler months later: the range covers the programme.
+    data.completions = [
+        completion(f"c{n}", "morning", datetime(2025, 6, 15, 9) + __import__("datetime").timedelta(days=n))
+        for n in range(60)
+    ] + [completion("late", "morning", datetime(2026, 3, 1, 9))]
+    first, last = default_range(data, date(2026, 10, 16))
+    assert (first, last) == (date(2025, 6, 15), date(2025, 8, 13))
+
+    data.completions = [completion("recent", "morning", datetime(2026, 10, 14, 9))]
+    first, last = default_range(data, date(2026, 10, 16))
+    assert last == date(2026, 10, 23), "still going: a week ahead"
+    data.completions = []
+    first, last = default_range(data, date(2026, 10, 16))
+    assert first == date(2026, 10, 1) and last == date(2026, 10, 23), "no completions: the schedule's dates"
+
+
+def test_hidden_activities_with_data_get_a_column_but_no_expectations():
+    data = study()
+    key = f"{APPLET}:activity:extra"
+    data.entities[key] = Entity(
+        key=key,
+        applet_id=APPLET,
+        kind="activity",
+        id="extra",
+        name="Old survey",
+        applet_name="EMA",
+        hidden=True,
+        order=9,
+    )
+    data.rules[APPLET].append(
+        rule("DAILY", event_id="ev-x", entity_id="extra", start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))
+    )
+    assert "Old survey (hidden)" not in [e.label for e in data.visible_entities()], "hidden and without data: left out"
+    data.completions = [completion("h", "extra", datetime(2026, 10, 3, 10))]
+    assert "Old survey (hidden)" in [e.label for e in data.visible_entities()]
+    computed = run(data)
+    assert not any(o.entity == key for o in computed.occurrences), "the phone does not offer hidden activities"
+    assert [x.entity for x in computed.extras] == [key]
