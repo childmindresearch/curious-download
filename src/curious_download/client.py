@@ -34,7 +34,15 @@ def _error_message(response: httpx.Response) -> str:
     try:
         body = response.json()
     except ValueError:
-        return response.text[:200] or response.reason_phrase
+        text = response.text.strip()
+        if text[:15].lower().startswith("<!doctype") or "<html" in text[:300].lower():
+            # Not the backend's JSON but an error page from a proxy or security filter in front of it,
+            # which typically happens when it refuses the request itself (for example a long URL).
+            return (
+                f"a proxy or security filter in front of the server refused the request "
+                f"({response.reason_phrase or response.status_code}) and answered with an HTML error page"
+            )
+        return text[:200] or response.reason_phrase
     result = body.get("result") if isinstance(body, dict) else None
     if isinstance(result, list) and result and isinstance(result[0], dict):
         return "; ".join(str(err.get("message", err)) for err in result)
@@ -222,8 +230,49 @@ class CuriousClient:
         """
         return self._get(f"/applets/{applet_id}/versions/{version}")["result"]
 
+    def applet_respondents_page(self, owner_id: str, applet_id: str, *, page: int, limit: int) -> dict:
+        """One page of the admin panel's Participants rows: {"result": [...], "count": n}.
+
+        Each row is one account: {id, status, lastSeen, details: [...]}; each detail is one subject in
+        one applet: subjectId, respondentSecretId, respondentNickname, subjectTag, subjectCreatedAt,
+        hasIndividualSchedule, subjectIsDeleted, invitation, roles. Owner, manager, coordinator, or reviewer.
+        """
+        params = {"page": page, "limit": limit}
+        return self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", params)
+
+    def applet_respondents(self, owner_id: str, applet_id: str, *, page_size: int = 1000) -> list[dict]:
+        """Every Participants row of an applet (see `applet_respondents_page`), read page by page."""
+        rows: list[dict] = []
+        page = 1
+        while True:
+            body = self.applet_respondents_page(owner_id, applet_id, page=page, limit=page_size)
+            chunk = body.get("result") or []
+            rows.extend(chunk)
+            total = int(body.get("count") or 0)
+            if not chunk or len(rows) >= total:
+                return rows
+            page += 1
+
+    def applet_events(self, applet_id: str, respondent_id: str | None = None) -> list[dict]:
+        """Schedule events: the default schedule, or with `respondent_id` (an account id) that
+        person's individual events only. Owner, manager, or coordinator."""
+        params = {"respondentId": respondent_id} if respondent_id else None
+        return self._get(f"/applets/{applet_id}/events", params)["result"]
+
+    def applet_events_history_page(
+        self, applet_id: str, *, page: int, limit: int, respondent_ids: Sequence[str] = ()
+    ) -> dict:
+        """One page of every saved version of every event: {"result": [...], "count": n}. Owner or manager.
+
+        With `respondent_ids` (account ids), only those people's individual events are included, plus
+        every default event (the backend treats a null respondent as matching).
+        """
+        params: list[tuple[str, str | int]] = [("page", page), ("limit", limit)]
+        params += [("respondentIds", user_id) for user_id in respondent_ids]
+        return self._get(f"/applets/{applet_id}/events/history", params)
+
     def participants(self, owner_id: str, applet_id: str) -> list[Participant]:
-        rows = self._get(f"/workspaces/{owner_id}/applets/{applet_id}/respondents", {"limit": 10000})["result"]
+        rows = self.applet_respondents(owner_id, applet_id)
         found: dict[str, Participant] = {}
         for row in rows:
             for detail in row.get("details") or []:

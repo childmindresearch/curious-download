@@ -200,6 +200,7 @@ async function enterMain(email, server) {
   if (state.workspaces.length === 1) {
     await Promise.all([loadAnswersApplets(), loadDictionaryApplets()]);
   }
+  if (window.dashboard) window.dashboard.onLogin(state.workspaces);
   refreshJobs();
 }
 
@@ -208,9 +209,10 @@ $("tabs").onclick = (event) => {
   const button = event.target.closest(".tab");
   if (!button) return;
   for (const tab of document.querySelectorAll(".tab")) tab.classList.toggle("active", tab === button);
-  for (const name of ["answers", "dictionary", "counts"]) {
+  for (const name of ["answers", "dictionary", "counts", "dashboard"]) {
     $(`tab-${name}`).hidden = name !== button.dataset.tab;
   }
+  if (button.dataset.tab === "dashboard" && window.dashboard) window.dashboard.show();
 };
 
 // -- answers form ----------------------------------------------------------------------------
@@ -440,7 +442,13 @@ async function refreshJobs() {
   }
 }
 
-const KIND_LABELS = { answers: "Answers", dictionary: "Data dictionary", counts: "Participant counts" };
+const KIND_LABELS = {
+  answers: "Answers",
+  dictionary: "Data dictionary",
+  counts: "Participant counts",
+  dashboard: "Dashboard data",
+  dashboard_export: "Dashboard export",
+};
 
 function renderJobs(jobs) {
   const list = $("job-list");
@@ -484,14 +492,19 @@ function renderJob(job) {
     }
   }
 
-  if (job.status === "failed") card.append(el("div", { class: "job-error" }, job.error || "Failed."));
+  if (job.status === "failed") {
+    if (job.stage && job.stage !== "Starting") {
+      card.append(el("div", { class: "job-stage" }, `Failed while: ${job.stage}${job.detail ? ` — ${job.detail}` : ""}`));
+    }
+    card.append(el("div", { class: "job-error" }, job.error || "Failed."));
+  }
   if (job.status === "cancelled") card.append(el("div", { class: "job-stage" }, "Cancelled."));
 
   if (job.status === "done" && job.result) {
     appendResult(card, job);
     for (const warning of job.warnings) card.append(el("div", { class: "job-warning" }, warning));
     const buttons = el("div", { class: "job-buttons" });
-    const revealPath = job.result.mainFile || job.result.folder;
+    const revealPath = job.kind === "dashboard" ? null : job.result.mainFile || job.result.folder;
     if (revealPath) {
       buttons.append(el("button", { class: "ghost", onclick: () => reveal(revealPath) }, "Show in Finder"));
     }
@@ -524,6 +537,30 @@ function appendResult(card, job) {
       el("div", { class: "job-summary" }, `${result.files} data dictionar${result.files === 1 ? "y" : "ies"} from ${ok} applet(s)`),
     );
     card.append(el("div", { class: "job-folder" }, result.folder));
+  } else if (job.kind === "dashboard_export") {
+    const counts = result.counts || {};
+    card.append(
+      el(
+        "div",
+        { class: "job-summary" },
+        `${result.study} · ${result.view} view · ${counts.rows} row(s) × ${counts.columns} column(s), ` +
+          `${(counts.occurrenceRows || 0).toLocaleString()} occurrence row(s) · ${(result.files || []).join(", ")}`,
+      ),
+    );
+    card.append(el("div", { class: "job-folder" }, result.folder));
+  } else if (job.kind === "dashboard") {
+    const fresh =
+      result.mode === "refresh"
+        ? ` · refreshed: ${(result.newCompletions || 0).toLocaleString()} new completion(s), ${result.newParticipants || 0} new participant(s)`
+        : "";
+    card.append(
+      el(
+        "div",
+        { class: "job-summary" },
+        `${result.participants.toLocaleString()} participant(s), ${result.completions.toLocaleString()} completion(s), ` +
+          `${result.activities} activit${result.activities === 1 ? "y" : "ies"} across ${result.applets} applet(s)${fresh} — shown in the Dashboard tab`,
+      ),
+    );
   } else if (job.kind === "counts") {
     const range =
       result.fromUtc || result.toUtc
@@ -653,6 +690,10 @@ async function init() {
     snapshot = await api("/api/state");
   } catch {
     return; // the token-error view is already shown by api()
+  }
+  if (snapshot.banner) {
+    $("app-banner").textContent = snapshot.banner;
+    $("app-banner").hidden = false;
   }
   $("login-server").value = snapshot.settings.server || "";
   $("login-email").value = snapshot.settings.email || "";

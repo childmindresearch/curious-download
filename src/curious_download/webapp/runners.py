@@ -13,6 +13,8 @@ from ..cli import _equivalent_command, dictionary_command
 from ..client import ApiError, CuriousClient, Participant
 from ..crypto import AppletDecryptor
 from ..csvout import file_slug, write_csv
+from ..dashboard.excel import write_workbook
+from ..dashboard.views import GridResult, cells_csv, grid_csv, long_csv, rows_csv
 from ..dictionary import INDEX_COLUMNS, build_dictionaries, fetch_history, write_dictionaries
 from ..export import DEFAULT_PAGE_SIZE, ExportFilters, build_export, download_answers, write_jsonl
 from ..journey import JOURNEY_COLUMNS, JOURNEY_FILE_NAME, journey_info
@@ -296,4 +298,140 @@ def run_counts(
         "toUtc": filters.api_to,
         "rows": rows,
         "command": " ".join(shlex.quote(part) for part in parts),
+    }
+
+
+DASHBOARD_FILES = {
+    "info": "export_info.json",
+    "cells": "dashboard_cells.csv",
+    "grid": "dashboard_grid.csv",
+    "rows": "participants.csv",
+    "occurrences": "occurrences.csv",
+}
+OPTIONAL_DASHBOARD_FILES = {"gridJson": "dashboard_grid.json", "workbook": "dashboard.xlsx"}
+
+
+def _write_text(path: Path, text: str) -> None:
+    # UTF-8 with a BOM and LF line endings, like the other CSVs this tool writes.
+    path.write_text("\ufeff" + text, encoding="utf-8", newline="")
+
+
+def run_dashboard_export(
+    job: Job,
+    *,
+    server: str,
+    email: str,
+    study: dict,
+    data_info: dict,
+    result: GridResult,
+    output: Path,
+    grid_json: bool = True,
+    workbook: bool = True,
+) -> dict:
+    """Write a computed dashboard view as a folder of CSVs plus a JSON describing them.
+
+    With `grid_json`, the exact payload the page renders is saved too; with `workbook`, an Excel
+    file with one sheet per CSV and a coloured copy of the grid.
+    """
+    grid = result.grid
+    params = grid["params"]
+    focused = bool(params.get("focus"))
+    job.progress(stage="Writing dashboard files")
+    folder = output / f"dashboard_{file_slug(study['name'])}_{grid['view']}_{_timestamp()}"
+    folder.mkdir(parents=True, exist_ok=True)
+    files = dict(DASHBOARD_FILES)
+    if focused:
+        files["rows"] = "activities.csv"
+    if grid_json:
+        files["gridJson"] = OPTIONAL_DASHBOARD_FILES["gridJson"]
+    if workbook:
+        files["workbook"] = OPTIONAL_DASHBOARD_FILES["workbook"]
+
+    cells = cells_csv(grid)
+    rows = rows_csv(grid)
+    occurrences = long_csv(result)
+    _write_text(folder / files["cells"], cells)
+    _write_text(folder / files["grid"], grid_csv(grid))
+    _write_text(folder / files["rows"], rows)
+    _write_text(folder / files["occurrences"], occurrences)
+
+    overall = grid.get("overall") or {}
+    counts = {
+        "rows": len(grid["rows"]),
+        "columns": len(grid["columns"]),
+        "cells": sum(1 for row in grid["rows"] for cell in row["cells"] if cell is not None),
+        "occurrenceRows": max(0, occurrences.count("\n") - 1),
+    }
+    info = {
+        "tool": f"curious-download {__version__}",
+        "created": _created(),
+        "server": server,
+        "exportedBy": email,
+        "study": {key: value for key, value in study.items() if key not in ("server",)},
+        "view": {
+            "kind": grid["view"],
+            **{key: value for key, value in params.items() if key != "focusLabel"},
+            "focusLabel": params.get("focusLabel"),
+        },
+        "data": data_info,
+        "summary": {
+            **counts,
+            "participants": overall.get("participants"),
+            "expected": overall.get("e"),
+            "done": overall.get("d"),
+            "late": overall.get("l"),
+            "partlyDone": overall.get("p"),
+            "missed": overall.get("m"),
+            "openOrUpcoming": overall.get("u"),
+            "unscheduled": overall.get("x"),
+            "adherence": overall.get("pct"),
+        },
+        "statuses": grid.get("legend") or [],
+        "notes": grid.get("notes") or [],
+        "files": files,
+        "columns": {
+            files["cells"]: "one row per participant and column: counts of expected occurrences by outcome, the "
+            "status the cell is coloured with, and the first completion day",
+            files["grid"]: "the grid as shown in the app, one column per cell",
+            files["rows"]: "totals per row; adherence is done divided by occurrences whose window has closed",
+            files["occurrences"]: "one row per expected occurrence and per completion of it, with the time window",
+        },
+    }
+    if grid_json:
+        info["columns"][files["gridJson"]] = (
+            "the grid exactly as the app renders it: columns, rows with cells {e, d, l, p, m, u, x, s, t}, "
+            "totals, legend, notes, and the view parameters"
+        )
+        (folder / files["gridJson"]).write_text(json.dumps(grid, indent=2, ensure_ascii=False))
+    if workbook:
+        info["columns"][files["workbook"]] = (
+            "the same content as one Excel workbook: Info, Grid (coloured as in the app), and one sheet per CSV"
+        )
+    (folder / files["info"]).write_text(json.dumps(info, indent=2, ensure_ascii=False))
+    if workbook:
+        job.progress(stage="Writing the Excel workbook")
+        try:
+            write_workbook(
+                folder / files["workbook"],
+                info=info,
+                grid=grid,
+                tables={"Cells": cells, "Activities" if focused else "Participants": rows, "Occurrences": occurrences},
+            )
+        except ImportError:
+            files.pop("workbook")
+            info["columns"].pop(OPTIONAL_DASHBOARD_FILES["workbook"], None)
+            info["files"] = files
+            (folder / files["info"]).write_text(json.dumps(info, indent=2, ensure_ascii=False))
+            job.warn(
+                "The Excel workbook was skipped: the openpyxl package is not installed. "
+                "Run `pip install -e <path to curious-data-download>` again to add it."
+            )
+    for note in grid.get("notes") or []:
+        job.warn(note)
+    return {
+        "folder": str(folder),
+        "files": sorted(files.values()),
+        "study": study["name"],
+        "view": grid["view"],
+        "counts": counts,
     }
